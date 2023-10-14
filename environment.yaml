@@ -22,14 +22,14 @@ channels:
 
 dependencies:
   - python=3.11
-  - pytorch=2.*
-  - torchvision=0.*
-  - lightning=2.*
-  - torchmetrics=0.*
-  - hydra-core=1.*
-  - rich=13.*
-  - pre-commit=3.*
-  - pytest=7.*
+  - pytorch
+  - torchvision
+  - lightning
+  - torchmetrics
+  - hydra-core
+  - rich
+  - pre-commit
+  - pytest
 
   # --------- loggers --------- #
   - wandb
