@@ -3,4 +3,4 @@ data_dir: ${paths.data_dir}
 batch_size: 128 # Needs to be divisible by the number of devices (e.g., if in a distributed setup)
 train_val_test_split: [55_000, 5_000, 10_000]
 num_workers: 63
-pin_memory: False
+pin_memory: True # set to True if using GPU

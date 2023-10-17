@@ -3,12 +3,12 @@
 from setuptools import find_packages, setup
 
 setup(
-    name="src",
+    name="DeepRAGTuner",
     version="0.0.1",
-    description="Describe Your Cool Project",
-    author="",
-    author_email="",
-    url="https://github.com/user/project",
+    description="End to End RAG fine tuning",
+    author="Arijit Das",
+    author_email="arijit.das@selfsupervised.de",
+    url="https://github.com/das-projects/DeepRAGTuner",
     install_requires=["lightning", "hydra-core"],
     packages=find_packages(),
     # use this to customize global commands available in the terminal after installing the package
