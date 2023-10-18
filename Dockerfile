@@ -29,6 +29,12 @@ RUN pip-sync requirements.txt
 RUN MAX_JOBS=4 pip install flash-attn --no-build-isolation
 RUN pip install .
 
+RUN git clone https://github.com/Dao-AILab/flash-attention.git \
+    && cd flash-attention \
+    && cd csrc/layer_norm && pip install . && cd ../../ \
+    && cd csrc/fused_dense_lib && pip install . && cd ../../ \
+    && cd .. && rm -rf flash-attention
+
 # Specify the default command to run on container start (optional)
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "80"]
 
