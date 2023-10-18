@@ -77,13 +77,13 @@ class UploadCodeAsArtifact(Callback):
 
             for path in Path(self.code_dir).resolve().rglob("*"):
                 if (
-                    path.is_file()
-                    # ignore files in .git
-                    and not str(path).startswith(str(git_dir_path))  # noqa: W503
-                    # ignore files ignored by git
-                    and (  # noqa: W503
+                        path.is_file()
+                        # ignore files in .git
+                        and not str(path).startswith(str(git_dir_path))  # noqa: W503
+                        # ignore files ignored by git
+                        and (  # noqa: W503
                         subprocess.run(["git", "check-ignore", "-q", str(path)]).returncode == 1
-                    )
+                )
                 ):
                     code.add_file(str(path), name=str(path.relative_to(self.code_dir)))
 
@@ -139,7 +139,7 @@ class LogConfusionMatrix(Callback):
         self.ready = True
 
     def on_validation_batch_end(
-        self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx
+            self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx
     ):
         """Gather data from single batch."""
         if self.ready:
@@ -197,7 +197,7 @@ class LogF1PrecRecHeatmap(Callback):
         self.ready = True
 
     def on_validation_batch_end(
-        self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx
+            self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx
     ):
         """Gather data from single batch."""
         if self.ready:

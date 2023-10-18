@@ -3,15 +3,14 @@
 # (6-7% slow down on GPT-2 small). Instead we only compute for iterations where we need to log, and don't
 # call .item() explicitly.
 
-from typing import Any
 from collections import OrderedDict
-
-from pytorch_lightning import Callback, Trainer
-from pytorch_lightning.utilities import rank_zero_only
-from pytorch_lightning.strategies import DeepSpeedStrategy
+from typing import Any
 
 import torch
 import torch.nn as nn
+from pytorch_lightning import Callback, Trainer
+from pytorch_lightning.strategies import DeepSpeedStrategy
+from pytorch_lightning.utilities import rank_zero_only
 
 try:
     from apex.contrib.layer_norm import FastLayerNorm
@@ -42,7 +41,7 @@ class NormMonitor(Callback):
             for mn, m in model.named_modules():
                 if isinstance(m, ln_modules):
                     for pn, p in m.named_parameters():
-                        fpn = '%s.%s' % (mn, pn) if mn else pn # full param name
+                        fpn = '%s.%s' % (mn, pn) if mn else pn  # full param name
                         named_parameters[fpn] = p
         else:
             named_parameters = dict(model.named_parameters())

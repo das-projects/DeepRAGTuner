@@ -2,8 +2,8 @@
 from typing import Any
 
 from pytorch_lightning import Callback, Trainer
-from pytorch_lightning.utilities import rank_zero_only
 from pytorch_lightning.strategies import DeepSpeedStrategy
+from pytorch_lightning.utilities import rank_zero_only
 
 
 class LossScaleMonitor(Callback):

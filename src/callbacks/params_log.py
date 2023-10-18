@@ -1,5 +1,3 @@
-from typing import Any
-
 from pytorch_lightning import Callback, Trainer, LightningModule
 from pytorch_lightning.utilities import rank_zero_only
 from pytorch_lightning.utilities.parsing import AttributeDict
@@ -8,6 +6,7 @@ from pytorch_lightning.utilities.parsing import AttributeDict
 class ParamsLog(Callback):
     """Log the number of parameters of the model
     """
+
     def __init__(self, total_params_log: bool = True, trainable_params_log: bool = True,
                  non_trainable_params_log: bool = True):
         super().__init__()
@@ -26,7 +25,7 @@ class ParamsLog(Callback):
             logs["model/params_total"] = sum(p.numel() for p in pl_module.parameters())
         if self._log_stats.trainable_params_log:
             logs["model/params_trainable"] = sum(p.numel() for p in pl_module.parameters()
-                                             if p.requires_grad)
+                                                 if p.requires_grad)
         if self._log_stats.non_trainable_params_log:
             logs["model/params_not_trainable"] = sum(p.numel() for p in pl_module.parameters()
                                                      if not p.requires_grad)

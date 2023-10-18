@@ -3,7 +3,7 @@
 import time
 from typing import Any
 
-from pytorch_lightning import Callback, Trainer
+from pytorch_lightning import Callback
 from pytorch_lightning.utilities import rank_zero_only
 from pytorch_lightning.utilities.parsing import AttributeDict
 from pytorch_lightning.utilities.types import STEP_OUTPUT
@@ -12,6 +12,7 @@ from pytorch_lightning.utilities.types import STEP_OUTPUT
 class SpeedMonitor(Callback):
     """Monitor the speed of each step and each epoch.
     """
+
     def __init__(self, intra_step_time: bool = True, inter_step_time: bool = True,
                  epoch_time: bool = True, verbose=False):
         super().__init__()
@@ -40,11 +41,11 @@ class SpeedMonitor(Callback):
 
     @rank_zero_only
     def on_train_batch_start(
-        self,
-        trainer: "pl.Trainer",
-        pl_module: "pl.LightningModule",
-        batch: Any,
-        batch_idx: int,
+            self,
+            trainer: "pl.Trainer",
+            pl_module: "pl.LightningModule",
+            batch: Any,
+            batch_idx: int,
     ) -> None:
         if self._log_stats.intra_step_time:
             self._snap_intra_step_time = time.time()
@@ -62,12 +63,12 @@ class SpeedMonitor(Callback):
 
     @rank_zero_only
     def on_train_batch_end(
-        self,
-        trainer: "pl.Trainer",
-        pl_module: "pl.LightningModule",
-        outputs: STEP_OUTPUT,
-        batch: Any,
-        batch_idx: int,
+            self,
+            trainer: "pl.Trainer",
+            pl_module: "pl.LightningModule",
+            outputs: STEP_OUTPUT,
+            batch: Any,
+            batch_idx: int,
     ) -> None:
         if self._log_stats.inter_step_time:
             self._snap_inter_step_time = time.time()
@@ -86,10 +87,9 @@ class SpeedMonitor(Callback):
             trainer.logger.log_metrics(logs, step=trainer.global_step)
 
     @rank_zero_only
-    def on_train_epoch_end(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule",) -> None:
+    def on_train_epoch_end(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule", ) -> None:
         logs = {}
         if self._log_stats.epoch_time and self._snap_epoch_time:
             logs["time/epoch (s)"] = time.time() - self._snap_epoch_time
         if trainer.logger is not None:
             trainer.logger.log_metrics(logs, step=trainer.global_step)
-
