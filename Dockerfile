@@ -1,5 +1,5 @@
 # Use the latest NVIDIA PyTorch base image
-FROM nvcr.io/nvidia/pytorch:23.09-py3 as base
+FROM pytorch/pytorch:2.1.0-cuda12.1-cudnn8-devel as base
 
 # Set up some metadata
 LABEL authors="Arijit Das"
@@ -7,8 +7,11 @@ LABEL maintainer="arijit.das@selfsupervised.de"
 LABEL version="0.1"
 LABEL description="Docker image for End to End RAG fine tuning"
 
+# Avoid prompts with apt-get
+ENV DEBIAN_FRONTEND=noninteractive
+
 # Set the working directory in the container
-ENV HOME=/home/user
+ENV HOME=/workspace
 RUN mkdir -p $HOME && chmod 777 $HOME
 WORKDIR $HOME
 
@@ -22,22 +25,12 @@ RUN pip install --upgrade pip pip-tools
 RUN pip-compile --resolver=backtracking requirements.in
 
 # Create virtual environment and install only required dependencies
-RUN python -m venv $HOME/venv
-RUN . $HOME/venv/bin/activate
 RUN pip-sync requirements.txt
 RUN MAX_JOBS=4 pip install flash-attn --no-build-isolation
 RUN pip install .
 
-# Start a new stage to create smaller runtime images
-FROM nvcr.io/nvidia/pytorch:23.09-py3 as runtime
-
-COPY --from=base $HOME $HOME
-
-ENV PATH = "$HOME/venv/bin:$PATH"
-RUN . $HOME/venv/bin/activate
-
 # Specify the default command to run on container start (optional)
-CMD ["python", "src/train.py"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "80"]
 
 
 
