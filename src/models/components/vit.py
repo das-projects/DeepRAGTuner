@@ -21,75 +21,6 @@ from flash_attn.modules.mlp import FusedMLP, Mlp
 from flash_attn.ops.layer_norm import dropout_add_layer_norm
 
 
-def create_mixer_cls(
-    num_heads, qkv_bias, attn_drop, use_flash_attn, fused_bias_fc, cross_attn=False
-):
-    mixer_cls = partial(
-        MHA,
-        num_heads=num_heads,
-        cross_attn=cross_attn,
-        qkv_proj_bias=qkv_bias,
-        dropout=attn_drop,
-        fused_bias_fc=fused_bias_fc,
-        use_flash_attn=use_flash_attn,
-    )
-    return mixer_cls
-
-
-def create_mlp_cls(embed_dim, mlp_ratio, act_layer, fused_mlp):
-    inner_dim = int(embed_dim * mlp_ratio)
-    if not fused_mlp:
-        mlp_cls = partial(Mlp, hidden_features=inner_dim, activation=act_layer())
-    else:
-        mlp_cls = partial(FusedMLP, hidden_features=inner_dim)
-    return mlp_cls
-
-
-def create_block(
-    embed_dim,
-    num_heads,
-    mlp_ratio,
-    qkv_bias,
-    drop_rate,
-    attn_drop_rate,
-    drop_path1,
-    drop_path2,
-    norm_layer,
-    act_layer,
-    use_flash_attn,
-    fused_bias_fc,
-    fused_mlp,
-    fused_dropout_add_ln,
-    layer_idx=None,
-    n_layer=None,
-    last_layer_subset=False,
-):
-    mixer_cls = create_mixer_cls(
-        num_heads,
-        qkv_bias,
-        attn_drop_rate,
-        use_flash_attn,
-        fused_bias_fc,
-        cross_attn=(last_layer_subset and layer_idx == n_layer - 1),
-    )
-    mlp_cls = create_mlp_cls(embed_dim, mlp_ratio, act_layer, fused_mlp)
-    # TD [2022-10-15]: Force residual in fp32 in case of DeepSpeed
-    block = Block(
-        embed_dim,
-        mixer_cls,
-        mlp_cls,
-        norm_cls=norm_layer,
-        prenorm=True,
-        resid_dropout1=drop_rate,
-        resid_dropout2=drop_rate,
-        drop_path1=drop_path1,
-        drop_path2=drop_path2,
-        fused_dropout_add_ln=fused_dropout_add_ln,
-        residual_in_fp32=True,
-    )
-    return block
-
-
 class VisionTransformer(nn.Module):
     """Vision Transformer
     A PyTorch impl of : `An Image is Worth 16x16 Words: Transformers for Image Recognition at Scale`
@@ -201,7 +132,7 @@ class VisionTransformer(nn.Module):
         # This is for performance reason: we can fuse dropout + add + layer_norm.
         self.blocks = nn.ModuleList(
             [
-                create_block(
+                self.create_block(
                     embed_dim,
                     num_heads,
                     mlp_ratio,
@@ -238,6 +169,74 @@ class VisionTransformer(nn.Module):
         )
 
         self.init_weights(weight_init)
+
+    @staticmethod
+    def create_mixer_cls(
+            num_heads, qkv_bias, attn_drop, use_flash_attn, fused_bias_fc, cross_attn=False
+    ):
+        mixer_cls = partial(
+            MHA,
+            num_heads=num_heads,
+            cross_attn=cross_attn,
+            qkv_proj_bias=qkv_bias,
+            dropout=attn_drop,
+            fused_bias_fc=fused_bias_fc,
+            use_flash_attn=use_flash_attn,
+        )
+        return mixer_cls
+    @staticmethod
+    def create_mlp_cls(embed_dim, mlp_ratio, act_layer, fused_mlp):
+        inner_dim = int(embed_dim * mlp_ratio)
+        if not fused_mlp:
+            mlp_cls = partial(Mlp, hidden_features=inner_dim, activation=act_layer())
+        else:
+            mlp_cls = partial(FusedMLP, hidden_features=inner_dim)
+        return mlp_cls
+
+    def create_block(
+            self,
+            embed_dim,
+            num_heads,
+            mlp_ratio,
+            qkv_bias,
+            drop_rate,
+            attn_drop_rate,
+            drop_path1,
+            drop_path2,
+            norm_layer,
+            act_layer,
+            use_flash_attn,
+            fused_bias_fc,
+            fused_mlp,
+            fused_dropout_add_ln,
+            layer_idx=None,
+            n_layer=None,
+            last_layer_subset=False,
+    ):
+        mixer_cls = self.create_mixer_cls(
+            num_heads,
+            qkv_bias,
+            attn_drop_rate,
+            use_flash_attn,
+            fused_bias_fc,
+            cross_attn=(last_layer_subset and layer_idx == n_layer - 1),
+        )
+        mlp_cls = self.create_mlp_cls(embed_dim, mlp_ratio, act_layer, fused_mlp)
+        # TD [2022-10-15]: Force residual in fp32 in case of DeepSpeed
+        block = Block(
+            embed_dim,
+            mixer_cls,
+            mlp_cls,
+            norm_cls=norm_layer,
+            prenorm=True,
+            resid_dropout1=drop_rate,
+            resid_dropout2=drop_rate,
+            drop_path1=drop_path1,
+            drop_path2=drop_path2,
+            fused_dropout_add_ln=fused_dropout_add_ln,
+            residual_in_fp32=True,
+        )
+        return block
 
     def init_weights(self, mode=""):
         assert mode == ""
@@ -331,7 +330,7 @@ class VisionTransformer(nn.Module):
         x = self.forward_head(x)
         return x
 
-    def load_state_dict(self, state_dict, strict=True):
+    def load_state_dict(self, state_dict, strict=True, **kwargs):
         patch_embed_weight = state_dict["patch_embed.proj.weight"]
         if patch_embed_weight.dim() == 4:
             # convert from Conv2d to Linear
