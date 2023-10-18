@@ -1,15 +1,11 @@
 import math
-from functools import partial
 from collections import namedtuple
 
+import hydra
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from torch.nn.modules.utils import _pair
-
-import hydra
-
 from einops import reduce, rearrange
+from torch.nn.modules.utils import _pair
 
 
 class ClassificationHeadLinear(nn.Module):
@@ -111,9 +107,6 @@ class LMHead(nn.Module):
         return CausalLMOutput(self.lm_head(hidden_states))
 
 
-
-
-
 # Adapted from https://github.com/pytorch/examples/blob/master/word_language_model/model.py
 class PositionalEncoding(nn.Module):
     r"""Inject some information about the relative or absolute position of the tokens
@@ -145,6 +138,7 @@ class PositionalEncoding(nn.Module):
             hydra.utils.call(initializer, pe)
             pe = rearrange(pe, 's d -> 1 s d' if self.batch_first else 's d -> s 1 d')
             self.pe = nn.Parameter(pe)
+
     @staticmethod
     def sinusoidal_init_(tensor):
         """
@@ -175,6 +169,7 @@ class PositionalEncoding(nn.Module):
 class Mlp(nn.Module):
     """ MLP as used in Vision Transformer, MLP-Mixer and related networks
     """
+
     def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=nn.GELU,
                  act_fn=None, drop=0., device=None, dtype=None):
         """TD [2021-10-27] act_fn takes precedence over act_layer if set.
@@ -204,6 +199,7 @@ class Mlp(nn.Module):
 class MlpBig(nn.Module):
     """ MLP as used in Vision Transformer, MLP-Mixer and related networks
     """
+
     def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=nn.GELU,
                  act_fn=None, drop=0., device=None, dtype=None):
         """Copied from Mlp above. If num_layers > 2, add more Mlp layers, doubling each time.
@@ -227,10 +223,12 @@ class MlpBig(nn.Module):
     def forward(self, x):
         return self.fwd(x)
 
+
 class GluMlp(nn.Module):
     """ MLP w/ GLU style gating
     See: https://arxiv.org/abs/1612.08083, https://arxiv.org/abs/2002.05202
     """
+
     def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=nn.Sigmoid, drop=0.):
         super().__init__()
         out_features = out_features or in_features
@@ -260,6 +258,7 @@ class GluMlp(nn.Module):
 class GatedMlp(nn.Module):
     """ MLP as used in gMLP
     """
+
     def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=nn.GELU,
                  gate_layer=None, drop=0.):
         super().__init__()
@@ -289,6 +288,7 @@ class GatedMlp(nn.Module):
 class ConvMlp(nn.Module):
     """ MLP using 1x1 convs that keeps spatial dims
     """
+
     def __init__(
             self, in_features, hidden_features=None, out_features=None, act_layer=nn.ReLU, norm_layer=None, drop=0.):
         super().__init__()
