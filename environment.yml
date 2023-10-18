@@ -25,6 +25,7 @@ dependencies:
   - lightning>=2.0.0
   - torchmetrics>=0.11.4
   - cutlass
+  - cuda==11.8.0  # this will install the latest cuda version available in conda
 
     # --------- config and tests--------- #
   - hydra-core
