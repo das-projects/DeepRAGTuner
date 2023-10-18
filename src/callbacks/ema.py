@@ -5,6 +5,7 @@
 
 from typing import Dict, Any
 
+import pytorch_lightning as pl
 from pytorch_lightning import Callback
 from pytorch_lightning.utilities.types import STEP_OUTPUT
 

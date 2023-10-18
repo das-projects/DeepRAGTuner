@@ -12,10 +12,7 @@ from pytorch_lightning import Callback, Trainer
 from pytorch_lightning.strategies import DeepSpeedStrategy
 from pytorch_lightning.utilities import rank_zero_only
 
-try:
-    from apex.contrib.layer_norm import FastLayerNorm
-except ImportError:
-    FastLayerNorm = None
+from apex.contrib.layer_norm import FastLayerNorm
 
 
 class NormMonitor(Callback):

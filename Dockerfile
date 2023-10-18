@@ -27,13 +27,20 @@ RUN pip-compile --resolver=backtracking requirements.in
 # Create virtual environment and install only required dependencies
 RUN pip-sync requirements.txt
 RUN MAX_JOBS=4 pip install flash-attn --no-build-isolation
-RUN pip install .
+
 
 RUN git clone https://github.com/Dao-AILab/flash-attention.git \
     && cd flash-attention \
     && cd csrc/layer_norm && pip install . && cd ../../ \
     && cd csrc/fused_dense_lib && pip install . && cd ../../ \
     && cd .. && rm -rf flash-attention
+
+RUN git clone https://github.com/NVIDIA/apex.git \
+    && cd apex \
+    && pip install -v --disable-pip-version-check --no-cache-dir --no-build-isolation --config-settings "--build-option=--cpp_ext" --config-settings "--build-option=--cuda_ext" ./ \
+    && cd .. && rm -rf apex
+
+RUN pip install .
 
 # Specify the default command to run on container start (optional)
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "80"]

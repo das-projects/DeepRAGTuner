@@ -36,16 +36,14 @@ class CausalityMonitor(Callback):
                 # [MP] LongTensors cannot have gradients - we start from post
                 # embedding in the LM case
                 input_dim = model.d_model
-                x = torch.randn((2, self.seq_len, input_dim), \
-                                requires_grad=True).to(pl_module.device)
+                x = torch.randn((2, self.seq_len, input_dim), requires_grad=True).to(pl_module.device)
                 # [DF] HACK: we need to get the layer that comes after the embedding
                 if hasattr(model, 'net'):
                     y = model.net(x)
                 else:
                     y = model.s4seq(x)
             else:
-                x = torch.randn(1, self.seq_len, self.input_dim, \
-                                requires_grad=True).to(pl_module.device)
+                x = torch.randn(1, self.seq_len, self.input_dim, requires_grad=True).to(pl_module.device)
                 y = model(x)
 
             stats = {}
