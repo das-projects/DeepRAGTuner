@@ -37,6 +37,3 @@ RUN git clone https://github.com/Dao-AILab/flash-attention.git \
 
 # Specify the default command to run on container start (optional)
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "80"]
-
-
-
