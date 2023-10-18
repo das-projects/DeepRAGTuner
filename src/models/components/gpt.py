@@ -120,6 +120,7 @@ class GPTPreTrainedModel(nn.Module):
         logger.info(load_return)
         return model
 
+    @staticmethod
     # https://github.com/huggingface/transformers/blob/c28d04e9e252a1a099944e325685f14d242ecdcd/src/transformers/models/gpt2/modeling_gpt2.py#L454
     def _init_weights(
             module,
@@ -207,7 +208,7 @@ class GPTModel(GPTPreTrainedModel):
         # This is for performance reason: we can fuse dropout + add + layer_norm.
         self.layers = nn.ModuleList(
             [
-                create_block(
+                self.create_block(
                     config, layer_idx=i, process_group=process_group, **factory_kwargs
                 )
                 for i in range(config.num_hidden_layers)
@@ -243,6 +244,244 @@ class GPTModel(GPTPreTrainedModel):
         )
         self.tie_weights()
 
+    def create_block(self, config, layer_idx=None, process_group=None, device=None, dtype=None):
+        factory_kwargs = {"device": device, "dtype": dtype}
+        sequence_parallel = getattr(config, "sequence_parallel", True)
+        mixer_cls = self.create_mixer_cls(
+            config, layer_idx, process_group=process_group, **factory_kwargs
+        )
+        mlp_cls = self.create_mlp_cls(
+            config, layer_idx, process_group=process_group, **factory_kwargs
+        )
+        use_rms_norm = getattr(config, "rms_norm", False)
+        norm_cls = partial(
+            nn.LayerNorm if not use_rms_norm else RMSNorm,
+            eps=config.layer_norm_epsilon,
+            **factory_kwargs,
+        )
+        # TD [2022-07-30]: Force residual in fp32, seems to make fp16 training more stable
+        residual_in_fp32 = getattr(config, "residual_in_fp32", False)
+        resid_dropout1 = (
+            config.resid_pdrop if layer_idx is None or layer_idx > 0 else config.embd_pdrop
+        )
+        prenorm = getattr(config, "prenorm", True)
+        parallel_block = getattr(config, "parallel_block", False)
+        if not parallel_block:
+            block = Block(
+                config.hidden_size,
+                mixer_cls,
+                mlp_cls,
+                norm_cls=norm_cls,
+                prenorm=prenorm,
+                resid_dropout1=resid_dropout1,
+                resid_dropout2=config.resid_pdrop,
+                fused_dropout_add_ln=getattr(config, "fused_dropout_add_ln", False),
+                residual_in_fp32=residual_in_fp32,
+                sequence_parallel=sequence_parallel and process_group is not None,
+                mark_shared_params=process_group is not None,
+            )
+        else:
+            assert prenorm
+            block = ParallelBlock(
+                config.hidden_size,
+                mixer_cls,
+                mlp_cls,
+                norm_cls=norm_cls,
+                resid_dropout1=resid_dropout1,
+                resid_dropout2=config.resid_pdrop,
+                tied_norm=getattr(config, "parallel_block_tied_norm", False),
+                fused_dropout_add_ln=getattr(config, "fused_dropout_add_ln", False),
+                residual_in_fp32=residual_in_fp32,
+                sequence_parallel=sequence_parallel and process_group is not None,
+                mark_shared_params=process_group is not None,
+            )
+        block.layer_idx = layer_idx
+        return block
+
+    @staticmethod
+    def create_mixer_cls(
+            config, layer_idx=None, process_group=None, device=None, dtype=None
+    ):
+        factory_kwargs = {"device": device, "dtype": dtype}
+        head_dim = getattr(
+            config, "head_dim", config.hidden_size // config.num_attention_heads
+        )
+        softmax_scale = 1.0 if not config.scale_attn_weights else head_dim ** (-0.5)
+        if config.scale_attn_by_inverse_layer_idx:
+            assert layer_idx is not None
+            softmax_scale /= float(layer_idx + 1)
+        dwconv = getattr(config, "attn_dwconv", False)
+        if dwconv:
+            assert process_group is None, "TensorParallel MHA does not support dwconv yet"
+        qkv_proj_bias = getattr(config, "qkv_proj_bias", True)
+        out_proj_bias = getattr(config, "out_proj_bias", True)
+        rotary_emb_dim = int(getattr(config, "rotary_emb_fraction", 0.0) * head_dim)
+        rotary_emb_base = getattr(config, "rotary_emb_base", 10000.0)
+        rotary_emb_scale_base = getattr(config, "rotary_emb_scale_base", None)
+        rotary_emb_interleaved = getattr(config, "rotary_emb_interleaved", False)
+        use_flash_attn = getattr(config, "use_flash_attn", False)
+        fused_bias_fc = getattr(config, "fused_bias_fc", False)
+        if not fused_bias_fc:
+            assert process_group is None, "TensorParallel MHA requires fused_bias_fc"
+        mha_cls = MHA if process_group is None else ParallelMHA
+        serial_kwargs = (
+            {"fused_bias_fc": fused_bias_fc, "dwconv": dwconv}
+            if process_group is None
+            else {}
+        )
+        parallel_kwargs = (
+            {
+                "process_group": process_group,
+                "sequence_parallel": getattr(config, "sequence_parallel", True),
+            }
+            if process_group is not None
+            else {}
+        )
+        num_heads_kv = getattr(config, "n_head_kv", None)
+        mixer_cls = partial(
+            mha_cls,
+            num_heads=config.num_attention_heads,
+            num_heads_kv=num_heads_kv,
+            qkv_proj_bias=qkv_proj_bias,
+            out_proj_bias=out_proj_bias,
+            dropout=config.attn_pdrop,
+            softmax_scale=softmax_scale,
+            causal=True,
+            layer_idx=layer_idx,
+            rotary_emb_dim=rotary_emb_dim,
+            rotary_emb_base=rotary_emb_base,
+            rotary_emb_scale_base=rotary_emb_scale_base,
+            rotary_emb_interleaved=rotary_emb_interleaved,
+            use_flash_attn=use_flash_attn,
+            **serial_kwargs,
+            **parallel_kwargs,
+            **factory_kwargs,
+        )
+        return mixer_cls
+
+    @staticmethod
+    def create_mlp_cls(config, layer_idx=None, process_group=None, device=None, dtype=None):
+        factory_kwargs = {"device": device, "dtype": dtype}
+        mlp_fc1_bias = getattr(config, "mlp_fc1_bias", True)
+        mlp_fc2_bias = getattr(config, "mlp_fc2_bias", True)
+        fused_mlp = getattr(config, "fused_mlp", False)
+        if fused_mlp:
+            assert config.activation_function in [
+                "gelu_new",
+                "gelu_fast",
+                "gelu_approx",
+                "gelu_pytorch_tanh",
+                "relu",
+                "sqrelu",
+            ]
+        fused_dense_sqrelu_dense = getattr(config, "fused_dense_sqrelu_dense", False)
+        if fused_dense_sqrelu_dense:
+            assert config.activation_function == "sqrelu", (
+                "fused_dense_sqrelu_dense only "
+                "supports approximate activation_function sqrelu"
+            )
+        assert not (fused_dense_sqrelu_dense and fused_mlp)
+        if not fused_mlp and not fused_dense_sqrelu_dense:
+            assert config.activation_function in [
+                "gelu",
+                "gelu_new",
+                "gelu_fast",
+                "gelu_approx",
+                "gelu_pytorch_tanh",
+                "relu",
+                "sqrelu",
+                "glu",
+                "swiglu",
+                "geglu",
+            ]
+            if config.activation_function in ["glu", "swiglu", "geglu"]:
+                activation = (
+                    F.sigmoid
+                    if config.activation_function == "glu"
+                    else (F.silu if config.activation_function == "swiglu" else F.gelu)
+                )
+                mlp_cls = GatedMlp if process_group is None else ParallelGatedMlp
+            else:
+                if config.activation_function == "relu":
+                    activation = partial(F.relu, inplace=True)
+                elif config.activation_function == "sqrelu":
+                    activation = sqrelu_fwd
+                else:
+                    approximate = (
+                        "tanh"
+                        if config.activation_function
+                           in ["gelu_new", "gelu_fast", "gelu_approx", "gelu_pytorch_tanh"]
+                        else "none"
+                    )
+                    activation = partial(F.gelu, approximate=approximate)
+                mlp_cls = Mlp if process_group is None else ParallelMLP
+            parallel_kwargs = (
+                {
+                    "process_group": process_group,
+                    "sequence_parallel": getattr(config, "sequence_parallel", True),
+                }
+                if process_group is not None
+                else {}
+            )
+            mlp_cls = partial(
+                mlp_cls,
+                hidden_features=config.n_inner,
+                activation=activation,
+                bias1=mlp_fc1_bias,
+                bias2=mlp_fc2_bias,
+                **parallel_kwargs,
+                **factory_kwargs,
+            )
+        else:
+            mlp_checkpoint_lvl = getattr(config, "mlp_checkpoint_lvl", 0)
+            # mlp_checkpoint_lvl could be a list, which contains the checkpoint_lvl for each layer
+            if isinstance(mlp_checkpoint_lvl, Sequence):
+                assert layer_idx is not None
+                mlp_checkpoint_lvl = mlp_checkpoint_lvl[layer_idx]
+            if fused_mlp:
+                if FusedMLP is None:
+                    raise ImportError("fused_dense is not installed")
+                activation = (
+                    "gelu_approx"
+                    if config.activation_function
+                       in ["gelu_new", "gelu_fast", "gelu_approx", "gelu_pytorch_tanh"]
+                    else config.activation_function
+                )
+                mlp_cls = FusedMLP if process_group is None else ParallelFusedMLP
+                parallel_kwargs = (
+                    {
+                        "process_group": process_group,
+                        "sequence_parallel": getattr(config, "sequence_parallel", True),
+                    }
+                    if process_group is not None
+                    else {}
+                )
+                mlp_cls = partial(
+                    mlp_cls,
+                    hidden_features=config.n_inner,
+                    activation=activation,
+                    checkpoint_lvl=mlp_checkpoint_lvl,
+                    bias1=mlp_fc1_bias,
+                    bias2=mlp_fc2_bias,
+                    **parallel_kwargs,
+                    **factory_kwargs,
+                )
+            elif fused_dense_sqrelu_dense:
+                if process_group is not None:
+                    assert (
+                        fused_mlp
+                    ), "Tensor Parallel is not implemented for FusedDenseSqreluDense"
+                assert FusedDenseSqreluDense is not None
+                mlp_cls = partial(
+                    FusedDenseSqreluDense,
+                    hidden_features=config.n_inner,
+                    checkpoint_lvl=mlp_checkpoint_lvl,
+                    **factory_kwargs,
+                )
+            else:
+                raise RuntimeError("MLP type not supported")
+        return mlp_cls
+
     def tie_weights(self):
         if self.process_group is not None:
             sync_shared_params(self, self.process_group)
@@ -264,12 +503,11 @@ class GPTModel(GPTPreTrainedModel):
             if self.process_group is not None and self.sequence_parallel
             else {}
         )
-        hidden_states = self.embeddings(
-            input_ids, position_ids=position_ids, **embedding_kwargs
-        )
-        if self.parallel_block:
-            hidden_states2 = None
+        hidden_states = self.embeddings(input_ids, position_ids=position_ids, **embedding_kwargs)
+
+        hidden_states2 = None
         residual = None
+
         mixer_kwargs = (
             {"seqlen": input_ids.shape[1]}
             if self.process_group is not None and self.sequence_parallel
@@ -442,7 +680,7 @@ class GPTLMHeadModel(GPTPreTrainedModel, GenerationMixin):
         CausalLMOutput = namedtuple("CausalLMOutput", ["logits"])
         return CausalLMOutput(logits=lm_logits)
 
-    def load_state_dict(self, state_dict, strict=True):
+    def load_state_dict(self, state_dict: dict, strict=True, assign=False):
         # Remapping from our checkpoints that used a different ordering of layers in the block
         # Previous: Attn / MLP -> Dropout -> Add -> LN
         # Current: Dropout -> Add -> LN -> Attn / MLP
@@ -761,7 +999,7 @@ def remap_state_dict_hf_gpt2(state_dict, config):
     def key_mapping_ln(key):
         key = re.sub(r"^ln_f.(weight|bias)", r"transformer.ln_f.\1", key)
         key = re.sub(
-            r"^h.(\d+).ln_(1|2).(weight|bias)", r"transformer.layers.\1.norm\2.\3", key
+            r"^h.(\d+).ln_([12]).(weight|bias)", r"transformer.layers.\1.norm\2.\3", key
         )
         return key
 
@@ -915,257 +1153,3 @@ def remap_state_dict_megatron(state_dict, config):
     return state_dict
 
 
-def create_mixer_cls(
-    config, layer_idx=None, process_group=None, device=None, dtype=None
-):
-    factory_kwargs = {"device": device, "dtype": dtype}
-    head_dim = getattr(
-        config, "head_dim", config.hidden_size // config.num_attention_heads
-    )
-    softmax_scale = 1.0 if not config.scale_attn_weights else head_dim ** (-0.5)
-    if config.scale_attn_by_inverse_layer_idx:
-        assert layer_idx is not None
-        softmax_scale /= float(layer_idx + 1)
-    dwconv = getattr(config, "attn_dwconv", False)
-    if dwconv:
-        assert process_group is None, "TensorParallel MHA does not support dwconv yet"
-    qkv_proj_bias = getattr(config, "qkv_proj_bias", True)
-    out_proj_bias = getattr(config, "out_proj_bias", True)
-    rotary_emb_dim = int(getattr(config, "rotary_emb_fraction", 0.0) * head_dim)
-    rotary_emb_base = getattr(config, "rotary_emb_base", 10000.0)
-    rotary_emb_scale_base = getattr(config, "rotary_emb_scale_base", None)
-    rotary_emb_interleaved = getattr(config, "rotary_emb_interleaved", False)
-    use_flash_attn = getattr(config, "use_flash_attn", False)
-    fused_bias_fc = getattr(config, "fused_bias_fc", False)
-    if not fused_bias_fc:
-        assert process_group is None, "TensorParallel MHA requires fused_bias_fc"
-    mha_cls = MHA if process_group is None else ParallelMHA
-    serial_kwargs = (
-        {"fused_bias_fc": fused_bias_fc, "dwconv": dwconv}
-        if process_group is None
-        else {}
-    )
-    parallel_kwargs = (
-        {
-            "process_group": process_group,
-            "sequence_parallel": getattr(config, "sequence_parallel", True),
-        }
-        if process_group is not None
-        else {}
-    )
-    num_heads_kv = getattr(config, "n_head_kv", None)
-    mixer_cls = partial(
-        mha_cls,
-        num_heads=config.num_attention_heads,
-        num_heads_kv=num_heads_kv,
-        qkv_proj_bias=qkv_proj_bias,
-        out_proj_bias=out_proj_bias,
-        dropout=config.attn_pdrop,
-        softmax_scale=softmax_scale,
-        causal=True,
-        layer_idx=layer_idx,
-        rotary_emb_dim=rotary_emb_dim,
-        rotary_emb_base=rotary_emb_base,
-        rotary_emb_scale_base=rotary_emb_scale_base,
-        rotary_emb_interleaved=rotary_emb_interleaved,
-        use_flash_attn=use_flash_attn,
-        **serial_kwargs,
-        **parallel_kwargs,
-        **factory_kwargs,
-    )
-    return mixer_cls
-
-
-def create_mlp_cls(config, layer_idx=None, process_group=None, device=None, dtype=None):
-    factory_kwargs = {"device": device, "dtype": dtype}
-    mlp_fc1_bias = getattr(config, "mlp_fc1_bias", True)
-    mlp_fc2_bias = getattr(config, "mlp_fc2_bias", True)
-    fused_mlp = getattr(config, "fused_mlp", False)
-    if fused_mlp:
-        assert config.activation_function in [
-            "gelu_new",
-            "gelu_fast",
-            "gelu_approx",
-            "gelu_pytorch_tanh",
-            "relu",
-            "sqrelu",
-        ]
-    fused_dense_sqrelu_dense = getattr(config, "fused_dense_sqrelu_dense", False)
-    if fused_dense_sqrelu_dense:
-        assert config.activation_function == "sqrelu", (
-            "fused_dense_sqrelu_dense only "
-            "supports approximate activation_function sqrelu"
-        )
-    assert not (fused_dense_sqrelu_dense and fused_mlp)
-    if not fused_mlp and not fused_dense_sqrelu_dense:
-        assert config.activation_function in [
-            "gelu",
-            "gelu_new",
-            "gelu_fast",
-            "gelu_approx",
-            "gelu_pytorch_tanh",
-            "relu",
-            "sqrelu",
-            "glu",
-            "swiglu",
-            "geglu",
-        ]
-        if config.activation_function in ["glu", "swiglu", "geglu"]:
-            activation = (
-                F.sigmoid
-                if config.activation_function == "glu"
-                else (F.silu if config.activation_function == "swiglu" else F.gelu)
-            )
-            mlp_cls = GatedMlp if process_group is None else ParallelGatedMlp
-            parallel_kwargs = (
-                {
-                    "process_group": process_group,
-                    "sequence_parallel": getattr(config, "sequence_parallel", True),
-                }
-                if process_group is not None
-                else {}
-            )
-            mlp_cls = partial(
-                mlp_cls,
-                hidden_features=config.n_inner,
-                activation=activation,
-                bias1=mlp_fc1_bias,
-                bias2=mlp_fc2_bias,
-                **parallel_kwargs,
-                **factory_kwargs,
-            )
-        else:
-            if config.activation_function == "relu":
-                activation = partial(F.relu, inplace=True)
-            elif config.activation_function == "sqrelu":
-                activation = sqrelu_fwd
-            else:
-                approximate = (
-                    "tanh"
-                    if config.activation_function
-                    in ["gelu_new", "gelu_fast", "gelu_approx", "gelu_pytorch_tanh"]
-                    else "none"
-                )
-                activation = partial(F.gelu, approximate=approximate)
-            mlp_cls = Mlp if process_group is None else ParallelMLP
-            parallel_kwargs = (
-                {
-                    "process_group": process_group,
-                    "sequence_parallel": getattr(config, "sequence_parallel", True),
-                }
-                if process_group is not None
-                else {}
-            )
-            mlp_cls = partial(
-                mlp_cls,
-                hidden_features=config.n_inner,
-                activation=activation,
-                bias1=mlp_fc1_bias,
-                bias2=mlp_fc2_bias,
-                **parallel_kwargs,
-                **factory_kwargs,
-            )
-    else:
-        mlp_checkpoint_lvl = getattr(config, "mlp_checkpoint_lvl", 0)
-        # mlp_checkpoint_lvl could be a list, which contains the checkpoint_lvl for each layer
-        if isinstance(mlp_checkpoint_lvl, Sequence):
-            assert layer_idx is not None
-            mlp_checkpoint_lvl = mlp_checkpoint_lvl[layer_idx]
-        if fused_mlp:
-            if FusedMLP is None:
-                raise ImportError("fused_dense is not installed")
-            activation = (
-                "gelu_approx"
-                if config.activation_function
-                in ["gelu_new", "gelu_fast", "gelu_approx", "gelu_pytorch_tanh"]
-                else config.activation_function
-            )
-            mlp_cls = FusedMLP if process_group is None else ParallelFusedMLP
-            parallel_kwargs = (
-                {
-                    "process_group": process_group,
-                    "sequence_parallel": getattr(config, "sequence_parallel", True),
-                }
-                if process_group is not None
-                else {}
-            )
-            mlp_cls = partial(
-                mlp_cls,
-                hidden_features=config.n_inner,
-                activation=activation,
-                checkpoint_lvl=mlp_checkpoint_lvl,
-                bias1=mlp_fc1_bias,
-                bias2=mlp_fc2_bias,
-                **parallel_kwargs,
-                **factory_kwargs,
-            )
-        elif fused_dense_sqrelu_dense:
-            if process_group is not None:
-                assert (
-                    fused_mlp
-                ), "Tensor Parallel is not implemented for FusedDenseSqreluDense"
-            assert FusedDenseSqreluDense is not None
-            mlp_cls = partial(
-                FusedDenseSqreluDense,
-                hidden_features=config.n_inner,
-                checkpoint_lvl=mlp_checkpoint_lvl,
-                **factory_kwargs,
-            )
-        else:
-            raise RuntimeError("MLP type not supported")
-    return mlp_cls
-
-
-def create_block(config, layer_idx=None, process_group=None, device=None, dtype=None):
-    factory_kwargs = {"device": device, "dtype": dtype}
-    sequence_parallel = getattr(config, "sequence_parallel", True)
-    mixer_cls = create_mixer_cls(
-        config, layer_idx, process_group=process_group, **factory_kwargs
-    )
-    mlp_cls = create_mlp_cls(
-        config, layer_idx, process_group=process_group, **factory_kwargs
-    )
-    use_rms_norm = getattr(config, "rms_norm", False)
-    norm_cls = partial(
-        nn.LayerNorm if not use_rms_norm else RMSNorm,
-        eps=config.layer_norm_epsilon,
-        **factory_kwargs,
-    )
-    # TD [2022-07-30]: Force residual in fp32, seems to make fp16 training more stable
-    residual_in_fp32 = getattr(config, "residual_in_fp32", False)
-    resid_dropout1 = (
-        config.resid_pdrop if layer_idx is None or layer_idx > 0 else config.embd_pdrop
-    )
-    prenorm = getattr(config, "prenorm", True)
-    parallel_block = getattr(config, "parallel_block", False)
-    if not parallel_block:
-        block = Block(
-            config.hidden_size,
-            mixer_cls,
-            mlp_cls,
-            norm_cls=norm_cls,
-            prenorm=prenorm,
-            resid_dropout1=resid_dropout1,
-            resid_dropout2=config.resid_pdrop,
-            fused_dropout_add_ln=getattr(config, "fused_dropout_add_ln", False),
-            residual_in_fp32=residual_in_fp32,
-            sequence_parallel=sequence_parallel and process_group is not None,
-            mark_shared_params=process_group is not None,
-        )
-    else:
-        assert prenorm
-        block = ParallelBlock(
-            config.hidden_size,
-            mixer_cls,
-            mlp_cls,
-            norm_cls=norm_cls,
-            resid_dropout1=resid_dropout1,
-            resid_dropout2=config.resid_pdrop,
-            tied_norm=getattr(config, "parallel_block_tied_norm", False),
-            fused_dropout_add_ln=getattr(config, "fused_dropout_add_ln", False),
-            residual_in_fp32=residual_in_fp32,
-            sequence_parallel=sequence_parallel and process_group is not None,
-            mark_shared_params=process_group is not None,
-        )
-    block.layer_idx = layer_idx
-    return block
