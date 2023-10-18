@@ -1,0 +1,17 @@
+
+lightning>=2.1.0
+torchmetrics>=0.11.4
+cutlass
+hydra-core
+rich
+pytest
+wandb
+sh
+packaging
+ninja
+hydra-optuna-sweeper
+hydra-colorlog
+rootutils
+triton
+git+https://github.com/mlcommons/logging.git
+huggingface_hub
