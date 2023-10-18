@@ -30,13 +30,24 @@ from flash_attn.modules.mlp import (
     ParallelMLP,
 )
 from flash_attn.ops.activations import sqrelu_fwd
-from flash_attn.utils.distributed import all_gather_raw, get_dim_for_local_rank, sync_shared_params
+from flash_attn.utils.distributed import (
+    all_gather_raw,
+    get_dim_for_local_rank,
+    sync_shared_params,
+)
 from flash_attn.utils.generation import GenerationMixin
 from flash_attn.utils.pretrained import state_dict_from_pretrained
 
 from flash_attn.ops.fused_dense import ColumnParallelLinear
-from flash_attn.ops.layer_norm import dropout_add_layer_norm, dropout_add_layer_norm_parallel_residual
-from flash_attn.ops.rms_norm import RMSNorm, dropout_add_rms_norm, dropout_add_rms_norm_parallel_residual
+from flash_attn.ops.layer_norm import (
+    dropout_add_layer_norm,
+    dropout_add_layer_norm_parallel_residual,
+)
+from flash_attn.ops.rms_norm import (
+    RMSNorm,
+    dropout_add_rms_norm,
+    dropout_add_rms_norm_parallel_residual,
+)
 from flash_attn.ops.triton.mlp import FusedDenseSqreluDense
 
 logger = logging.getLogger(__name__)
@@ -85,9 +96,8 @@ class GPTPreTrainedModel(nn.Module):
             state_dict = remap_state_dict_hf_gpt2(state_dict, config)
         elif model_name.startswith("facebook/opt"):
             state_dict = remap_state_dict_hf_opt(state_dict, config)
-        elif (
-            model_name.startswith("EleutherAI/gpt-j-")
-            or model_name.startswith("togethercomputer/GPT-JT-")
+        elif model_name.startswith("EleutherAI/gpt-j-") or model_name.startswith(
+            "togethercomputer/GPT-JT-"
         ):
             state_dict = remap_state_dict_hf_gptj(state_dict, config)
         elif (
@@ -110,27 +120,33 @@ class GPTPreTrainedModel(nn.Module):
         logger.info(load_return)
         return model
 
+    # https://github.com/huggingface/transformers/blob/c28d04e9e252a1a099944e325685f14d242ecdcd/src/transformers/models/gpt2/modeling_gpt2.py#L454
+    def _init_weights(
+            module,
+            n_layer,
+            initializer_range=0.02,
+            rescale_prenorm_residual=True
+    ):
+        if isinstance(module, nn.Linear):
+            nn.init.normal_(module.weight, std=initializer_range)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            nn.init.normal_(module.weight, std=initializer_range)
 
-# https://github.com/huggingface/transformers/blob/c28d04e9e252a1a099944e325685f14d242ecdcd/src/transformers/models/gpt2/modeling_gpt2.py#L454
-def _init_weights(module, n_layer, initializer_range=0.02, rescale_prenorm_residual=True):
-    if isinstance(module, nn.Linear):
-        nn.init.normal_(module.weight, std=initializer_range)
-        if module.bias is not None:
-            nn.init.zeros_(module.bias)
-    elif isinstance(module, nn.Embedding):
-        nn.init.normal_(module.weight, std=initializer_range)
-
-    if rescale_prenorm_residual:
-        # Reinitialize selected weights subject to the OpenAI GPT-2 Paper Scheme:
-        #   > A modified initialization which accounts for the accumulation on the residual path with model depth. Scale
-        #   > the weights of residual layers at initialization by a factor of 1/√N where N is the # of residual layers.
-        #   >   -- GPT-2 :: https://openai.com/blog/better-language-models/
-        #
-        # Reference (Megatron-LM): https://github.com/NVIDIA/Megatron-LM/blob/main/megatron/model/gpt_model.py
-        for name, p in module.named_parameters():
-            if name in ["out_proj.weight", "fc2.weight"]:
-                # Special Scaled Initialization --> There are 2 Layer Norms per Transformer Block
-                nn.init.normal_(p, mean=0.0, std=initializer_range / math.sqrt(2 * n_layer))
+        if rescale_prenorm_residual:
+            # Reinitialize selected weights subject to the OpenAI GPT-2 Paper Scheme:
+            #   > A modified initialization which accounts for the accumulation on the residual path with model depth. Scale
+            #   > the weights of residual layers at initialization by a factor of 1/√N where N is the # of residual layers.
+            #   >   -- GPT-2 :: https://openai.com/blog/better-language-models/
+            #
+            # Reference (Megatron-LM): https://github.com/NVIDIA/Megatron-LM/blob/main/megatron/model/gpt_model.py
+            for name, p in module.named_parameters():
+                if name in ["out_proj.weight", "fc2.weight"]:
+                    # Special Scaled Initialization --> There are 2 Layer Norms per Transformer Block
+                    nn.init.normal_(
+                        p, mean=0.0, std=initializer_range / math.sqrt(2 * n_layer)
+                    )
 
 
 class GPTModel(GPTPreTrainedModel):
@@ -153,7 +169,8 @@ class GPTModel(GPTPreTrainedModel):
         ]
         pad_vocab_size_multiple = getattr(config, "pad_vocab_size_multiple", 1)
         vocab_size = (
-            math.ceil(config.vocab_size / pad_vocab_size_multiple) * pad_vocab_size_multiple
+            math.ceil(config.vocab_size / pad_vocab_size_multiple)
+            * pad_vocab_size_multiple
         )
         # TD [2022-07-30]: Force residual in fp32, seems to make fp16 training more stable
         self.residual_in_fp32 = getattr(config, "residual_in_fp32", False)
@@ -190,7 +207,9 @@ class GPTModel(GPTPreTrainedModel):
         # This is for performance reason: we can fuse dropout + add + layer_norm.
         self.layers = nn.ModuleList(
             [
-                create_block(config, layer_idx=i, process_group=process_group, **factory_kwargs)
+                create_block(
+                    config, layer_idx=i, process_group=process_group, **factory_kwargs
+                )
                 for i in range(config.num_hidden_layers)
             ]
         )
@@ -217,7 +236,7 @@ class GPTModel(GPTPreTrainedModel):
 
         self.apply(
             partial(
-                _init_weights,
+                self._init_weights,
                 n_layer=config.num_hidden_layers,
                 initializer_range=config.initializer_range,
             )
@@ -230,7 +249,9 @@ class GPTModel(GPTPreTrainedModel):
 
     def allocate_inference_cache(self, batch_size, max_seqlen, dtype=None, **kwargs):
         return {
-            i: layer.allocate_inference_cache(batch_size, max_seqlen, dtype=dtype, **kwargs)
+            i: layer.allocate_inference_cache(
+                batch_size, max_seqlen, dtype=dtype, **kwargs
+            )
             for i, layer in enumerate(self.layers)
         }
 
@@ -243,7 +264,9 @@ class GPTModel(GPTPreTrainedModel):
             if self.process_group is not None and self.sequence_parallel
             else {}
         )
-        hidden_states = self.embeddings(input_ids, position_ids=position_ids, **embedding_kwargs)
+        hidden_states = self.embeddings(
+            input_ids, position_ids=position_ids, **embedding_kwargs
+        )
         if self.parallel_block:
             hidden_states2 = None
         residual = None
@@ -262,7 +285,10 @@ class GPTModel(GPTPreTrainedModel):
                     )
                 else:
                     hidden_states, hidden_states2, residual = layer(
-                        hidden_states, hidden_states2, residual, mixer_kwargs=mixer_kwargs
+                        hidden_states,
+                        hidden_states2,
+                        residual,
+                        mixer_kwargs=mixer_kwargs,
                     )
             else:
                 hidden_states = layer(hidden_states, mixer_kwargs=mixer_kwargs)
@@ -324,22 +350,31 @@ class GPTLMHeadModel(GPTPreTrainedModel, GenerationMixin):
         factory_kwargs = {"device": device, "dtype": dtype}
         super().__init__(config)
         self.process_group = process_group
-        self.transformer = GPTModel(config, process_group=process_group, **factory_kwargs)
+        self.transformer = GPTModel(
+            config, process_group=process_group, **factory_kwargs
+        )
         self.tie_word_embeddings = getattr(config, "tie_word_embeddings", True)
         lm_head_bias = getattr(config, "lm_head_bias", False)
         pad_vocab_size_multiple = getattr(config, "pad_vocab_size_multiple", 1)
         vocab_size = (
-            math.ceil(config.vocab_size / pad_vocab_size_multiple) * pad_vocab_size_multiple
+            math.ceil(config.vocab_size / pad_vocab_size_multiple)
+            * pad_vocab_size_multiple
         )
         # This option is for OPT-350m
         word_embed_proj_dim = getattr(config, "word_embed_proj_dim", None)
-        embed_dim = config.n_embd if word_embed_proj_dim is None else word_embed_proj_dim
+        embed_dim = (
+            config.n_embd if word_embed_proj_dim is None else word_embed_proj_dim
+        )
         if word_embed_proj_dim is not None:
-            self.project_out = nn.Linear(config.n_embd, embed_dim, bias=False, **factory_kwargs)
+            self.project_out = nn.Linear(
+                config.n_embd, embed_dim, bias=False, **factory_kwargs
+            )
         else:
             self.project_out = None
         if process_group is None:
-            self.lm_head = nn.Linear(embed_dim, vocab_size, bias=lm_head_bias, **factory_kwargs)
+            self.lm_head = nn.Linear(
+                embed_dim, vocab_size, bias=lm_head_bias, **factory_kwargs
+            )
         else:
             if ColumnParallelLinear is None:
                 raise ImportError("fused_dense_lib is not installed")
@@ -354,7 +389,7 @@ class GPTLMHeadModel(GPTPreTrainedModel, GenerationMixin):
         # Initialize weights and apply final processing
         self.apply(
             partial(
-                _init_weights,
+                self._init_weights,
                 n_layer=config.num_hidden_layers,
                 initializer_range=config.initializer_range,
             )
@@ -372,7 +407,9 @@ class GPTLMHeadModel(GPTPreTrainedModel, GenerationMixin):
             batch_size, max_seqlen, dtype=dtype, **kwargs
         )
 
-    def forward(self, input_ids, position_ids=None, inference_params=None, num_last_tokens=0):
+    def forward(
+        self, input_ids, position_ids=None, inference_params=None, num_last_tokens=0
+    ):
         """
         input_ids: (batch, seqlen) int tensor
         inference_params: for generation. Adapted from Megatron-LM (and Apex)
@@ -387,14 +424,19 @@ class GPTLMHeadModel(GPTPreTrainedModel, GenerationMixin):
             input_ids, position_ids=position_ids, inference_params=inference_params
         )
         if inference_params is not None:
-            assert hidden_states.ndim == 3, "sequence_parallel is not supported in generation mode"
+            assert (
+                hidden_states.ndim == 3
+            ), "sequence_parallel is not supported in generation mode"
         if num_last_tokens > 0:
             hidden_states = hidden_states[:, -num_last_tokens:]
         if self.project_out is not None:
             hidden_states = self.project_out(hidden_states)
         lm_logits = self.lm_head(hidden_states)
         # During inference, we want the full logit for sampling
-        if isinstance(self.lm_head, ColumnParallelLinear) and inference_params is not None:
+        if (
+            isinstance(self.lm_head, ColumnParallelLinear)
+            and inference_params is not None
+        ):
             lm_logits, _ = all_gather_raw(lm_logits, self.lm_head.process_group)
             lm_logits = rearrange(lm_logits, "(n b) ... d -> b ... (n d)", b=b)
         CausalLMOutput = namedtuple("CausalLMOutput", ["logits"])
@@ -406,7 +448,9 @@ class GPTLMHeadModel(GPTPreTrainedModel, GenerationMixin):
         # Current: Dropout -> Add -> LN -> Attn / MLP
         if "transformer.ln_0.weight" in state_dict:
             n_layers = len(self.transformer.layers)
-            ln_weight = state_dict.pop(f"transformer.layers.{n_layers - 1}.norm2.weight")
+            ln_weight = state_dict.pop(
+                f"transformer.layers.{n_layers - 1}.norm2.weight"
+            )
             ln_bias = state_dict.pop(f"transformer.layers.{n_layers - 1}.norm2.bias")
             state_dict["transformer.ln_f.weight"] = ln_weight
             state_dict["transformer.ln_f.bias"] = ln_bias
@@ -416,7 +460,9 @@ class GPTLMHeadModel(GPTPreTrainedModel, GenerationMixin):
                 state_dict[f"transformer.layers.{l}.norm2.weight"] = ln_weight
                 state_dict[f"transformer.layers.{l}.norm2.bias"] = ln_bias
                 if l > 0:
-                    ln_weight = state_dict.pop(f"transformer.layers.{l - 1}.norm2.weight")
+                    ln_weight = state_dict.pop(
+                        f"transformer.layers.{l - 1}.norm2.weight"
+                    )
                     ln_bias = state_dict.pop(f"transformer.layers.{l - 1}.norm2.bias")
                     state_dict[f"transformer.layers.{l}.norm1.weight"] = ln_weight
                     state_dict[f"transformer.layers.{l}.norm1.bias"] = ln_bias
@@ -434,7 +480,9 @@ def shard_state_dict_tp(state_dict, config, world_size, rank):
     This function modifies state_dict in place.
     """
     pad_vocab_size_multiple = getattr(config, "pad_vocab_size_multiple", 1)
-    vocab_size = math.ceil(config.vocab_size / pad_vocab_size_multiple) * pad_vocab_size_multiple
+    vocab_size = (
+        math.ceil(config.vocab_size / pad_vocab_size_multiple) * pad_vocab_size_multiple
+    )
     assert vocab_size % world_size == 0
     assert config.hidden_size % world_size == 0
     inner_dim = config.n_inner if config.n_inner is not None else 4 * config.hidden_size
@@ -467,7 +515,9 @@ def shard_state_dict_tp(state_dict, config, world_size, rank):
             x = state_dict[key]
             dim = x.shape[0] // world_size // 2
             state_dict[key] = rearrange(
-                rearrange(x, "(two o) ... -> two o ...", two=2)[:, rank * dim : (rank + 1) * dim],
+                rearrange(x, "(two o) ... -> two o ...", two=2)[
+                    :, rank * dim : (rank + 1) * dim
+                ],
                 "two o ... -> (two o) ...",
             )
 
@@ -527,7 +577,9 @@ def shard_state_dict_tp(state_dict, config, world_size, rank):
         shard_qkv_headdim(state_dict, f"transformer.layers.{i}.mixer.Wqkv.weight")
         shard_qkv_headdim(state_dict, f"transformer.layers.{i}.mixer.Wqkv.bias")
         shard_last_dim(
-            state_dict, f"transformer.layers.{i}.mixer.out_proj.weight", multiple_of=head_dim
+            state_dict,
+            f"transformer.layers.{i}.mixer.out_proj.weight",
+            multiple_of=head_dim,
         )
         if rank != 0:
             state_dict.pop(f"transformer.layers.{i}.mixer.out_proj.bias", None)
@@ -543,7 +595,9 @@ def shard_state_dict_tp(state_dict, config, world_size, rank):
     return state_dict
 
 
-def combine_state_dicts_tp(state_dicts: List[Dict[str, torch.Tensor]], config: GPT2Config):
+def combine_state_dicts_tp(
+    state_dicts: List[Dict[str, torch.Tensor]], config: GPT2Config
+):
     """Convert the list of sharded state_dict of a GPT model with tensor parallel to
     the state_dict of a standard GPT model.
 
@@ -555,7 +609,9 @@ def combine_state_dicts_tp(state_dicts: List[Dict[str, torch.Tensor]], config: G
     world_size = len(state_dicts)
     keys = state_dicts[0].keys()
     pad_vocab_size_multiple = getattr(config, "pad_vocab_size_multiple", 1)
-    vocab_size = math.ceil(config.vocab_size / pad_vocab_size_multiple) * pad_vocab_size_multiple
+    vocab_size = (
+        math.ceil(config.vocab_size / pad_vocab_size_multiple) * pad_vocab_size_multiple
+    )
     assert vocab_size % world_size == 0
     assert config.hidden_size % world_size == 0
     inner_dim = config.n_inner if config.n_inner is not None else 4 * config.hidden_size
@@ -579,9 +635,12 @@ def combine_state_dicts_tp(state_dicts: List[Dict[str, torch.Tensor]], config: G
         if key in state_dict:
             if n_head_kv == n_head:
                 xs = [
-                    rearrange(s[key], "(three d) ... -> three d ...", three=3) for s in state_dicts
+                    rearrange(s[key], "(three d) ... -> three d ...", three=3)
+                    for s in state_dicts
                 ]
-                state_dict[key] = rearrange(torch.cat(xs, dim=1), "three d ... -> (three d) ...")
+                state_dict[key] = rearrange(
+                    torch.cat(xs, dim=1), "three d ... -> (three d) ..."
+                )
             else:
                 n_head_each_rank = [
                     get_dim_for_local_rank(n_head, world_size, local_rank)
@@ -602,7 +661,9 @@ def combine_state_dicts_tp(state_dicts: List[Dict[str, torch.Tensor]], config: G
                         state_dicts, n_head_each_rank, n_head_kv_each_rank
                     )
                 ]
-                wq = torch.cat([x[: n_head_each_rank[rank]] for rank, x in enumerate(xs)], dim=0)
+                wq = torch.cat(
+                    [x[: n_head_each_rank[rank]] for rank, x in enumerate(xs)], dim=0
+                )
                 wk = torch.cat(
                     [
                         x[
@@ -631,8 +692,13 @@ def combine_state_dicts_tp(state_dicts: List[Dict[str, torch.Tensor]], config: G
 
     def combine_gated_mlp(state_dicts, state_dict, key):
         if key in state_dict:
-            xs = [rearrange(s[key], "(two d) ... -> two d ...", two=2) for s in state_dicts]
-            state_dict[key] = rearrange(torch.cat(xs, dim=1), "two d ... -> (two d) ...")
+            xs = [
+                rearrange(s[key], "(two d) ... -> two d ...", two=2)
+                for s in state_dicts
+            ]
+            state_dict[key] = rearrange(
+                torch.cat(xs, dim=1), "two d ... -> (two d) ..."
+            )
 
     state_dict = state_dicts[0].copy()  # don't modify state_dict[0] inplace
     combine_word_embeddings(
@@ -642,7 +708,10 @@ def combine_state_dicts_tp(state_dicts: List[Dict[str, torch.Tensor]], config: G
         combine_word_embeddings(state_dicts, state_dict, "lm_head.weight")
     if "transformer.embeddings.position_embeddings.weight" in state_dict:
         combine_dim(
-            state_dicts, state_dict, "transformer.embeddings.position_embeddings.weight", -1
+            state_dicts,
+            state_dict,
+            "transformer.embeddings.position_embeddings.weight",
+            -1,
         )
     mlp_combine_fn = (
         combine_gated_mlp
@@ -650,12 +719,22 @@ def combine_state_dicts_tp(state_dicts: List[Dict[str, torch.Tensor]], config: G
         else partial(combine_dim, dim=0)
     )
     for i in range(config.num_hidden_layers):
-        combine_qkv_headdim(state_dicts, state_dict, f"transformer.layers.{i}.mixer.Wqkv.weight")
-        combine_qkv_headdim(state_dicts, state_dict, f"transformer.layers.{i}.mixer.Wqkv.bias")
-        combine_dim(state_dicts, state_dict, f"transformer.layers.{i}.mixer.out_proj.weight", -1)
-        mlp_combine_fn(state_dicts, state_dict, f"transformer.layers.{i}.mlp.fc1.weight")
+        combine_qkv_headdim(
+            state_dicts, state_dict, f"transformer.layers.{i}.mixer.Wqkv.weight"
+        )
+        combine_qkv_headdim(
+            state_dicts, state_dict, f"transformer.layers.{i}.mixer.Wqkv.bias"
+        )
+        combine_dim(
+            state_dicts, state_dict, f"transformer.layers.{i}.mixer.out_proj.weight", -1
+        )
+        mlp_combine_fn(
+            state_dicts, state_dict, f"transformer.layers.{i}.mlp.fc1.weight"
+        )
         combine_dim(state_dicts, state_dict, f"transformer.layers.{i}.mlp.fc1.bias", 0)
-        combine_dim(state_dicts, state_dict, f"transformer.layers.{i}.mlp.fc2.weight", -1)
+        combine_dim(
+            state_dicts, state_dict, f"transformer.layers.{i}.mlp.fc2.weight", -1
+        )
     return state_dict
 
 
@@ -668,16 +747,22 @@ def remap_state_dict_hf_gpt2(state_dict, config):
     word_embeddings = state_dict.pop("wte.weight")
     # It's possible that vocab_size is padded to be a multiple of 8, for example.
     pad_vocab_size_multiple = getattr(config, "pad_vocab_size_multiple", 1)
-    vocab_size = math.ceil(config.vocab_size / pad_vocab_size_multiple) * pad_vocab_size_multiple
+    vocab_size = (
+        math.ceil(config.vocab_size / pad_vocab_size_multiple) * pad_vocab_size_multiple
+    )
     state_dict["transformer.embeddings.word_embeddings.weight"] = F.pad(
         word_embeddings, (0, 0, 0, vocab_size - word_embeddings.shape[0])
     )
-    state_dict["lm_head.weight"] = state_dict["transformer.embeddings.word_embeddings.weight"]
+    state_dict["lm_head.weight"] = state_dict[
+        "transformer.embeddings.word_embeddings.weight"
+    ]
 
     # LayerNorm
     def key_mapping_ln(key):
         key = re.sub(r"^ln_f.(weight|bias)", r"transformer.ln_f.\1", key)
-        key = re.sub(r"^h.(\d+).ln_(1|2).(weight|bias)", r"transformer.layers.\1.norm\2.\3", key)
+        key = re.sub(
+            r"^h.(\d+).ln_(1|2).(weight|bias)", r"transformer.layers.\1.norm\2.\3", key
+        )
         return key
 
     state_dict = OrderedDict((key_mapping_ln(k), v) for k, v in state_dict.items())
@@ -690,8 +775,12 @@ def remap_state_dict_hf_gpt2(state_dict, config):
         state_dict[f"transformer.layers.{d}.mlp.fc2.weight"] = W2.t()
 
     def key_mapping_mlp(key):
-        key = re.sub(r"^h.(\d+).mlp.c_fc.bias", r"transformer.layers.\1.mlp.fc1.bias", key)
-        key = re.sub(r"^h.(\d+).mlp.c_proj.bias", r"transformer.layers.\1.mlp.fc2.bias", key)
+        key = re.sub(
+            r"^h.(\d+).mlp.c_fc.bias", r"transformer.layers.\1.mlp.fc1.bias", key
+        )
+        key = re.sub(
+            r"^h.(\d+).mlp.c_proj.bias", r"transformer.layers.\1.mlp.fc2.bias", key
+        )
         return key
 
     state_dict = OrderedDict((key_mapping_mlp(k), v) for k, v in state_dict.items())
@@ -705,9 +794,13 @@ def remap_state_dict_hf_gpt2(state_dict, config):
         state_dict[f"transformer.layers.{d}.mixer.out_proj.weight"] = Wout.t()
 
     def key_mapping_attn(key):
-        key = re.sub(r"^h.(\d+).attn.c_attn.bias", r"transformer.layers.\1.mixer.Wqkv.bias", key)
         key = re.sub(
-            r"^h.(\d+).attn.c_proj.bias", r"transformer.layers.\1.mixer.out_proj.bias", key
+            r"^h.(\d+).attn.c_attn.bias", r"transformer.layers.\1.mixer.Wqkv.bias", key
+        )
+        key = re.sub(
+            r"^h.(\d+).attn.c_proj.bias",
+            r"transformer.layers.\1.mixer.out_proj.bias",
+            key,
         )
         return key
 
@@ -722,7 +815,9 @@ def remap_state_dict_megatron(state_dict, config):
         key = re.sub(r"^language_model.", "transformer.", key)
         return key
 
-    state_dict = OrderedDict((key_mapping_transformer(k), v) for k, v in state_dict.items())
+    state_dict = OrderedDict(
+        (key_mapping_transformer(k), v) for k, v in state_dict.items()
+    )
 
     # Word embedding and position embedding
     def key_mapping_pos_emb(key):
@@ -733,16 +828,21 @@ def remap_state_dict_megatron(state_dict, config):
     # It's possible that vocab_size is padded to be a multiple of 8, for example.
     pad_vocab_size_multiple = getattr(config, "pad_vocab_size_multiple", 1)
     vocab_size = (
-        math.ceil(word_embeddings.shape[0] / pad_vocab_size_multiple) * pad_vocab_size_multiple
+        math.ceil(word_embeddings.shape[0] / pad_vocab_size_multiple)
+        * pad_vocab_size_multiple
     )
     state_dict["transformer.embeddings.word_embeddings.weight"] = F.pad(
         word_embeddings, (0, 0, 0, vocab_size - word_embeddings.shape[0])
     )
-    state_dict["lm_head.weight"] = state_dict["transformer.embeddings.word_embeddings.weight"]
+    state_dict["lm_head.weight"] = state_dict[
+        "transformer.embeddings.word_embeddings.weight"
+    ]
 
     # LayerNorm
     def key_mapping_ln(key):
-        key = re.sub(r"^transformer.final_layernorm.(weight|bias)", r"transformer.ln_f.\1", key)
+        key = re.sub(
+            r"^transformer.final_layernorm.(weight|bias)", r"transformer.ln_f.\1", key
+        )
         key = re.sub(
             r"^transformer.layers.(\d+).input_layernorm.(weight|bias)",
             r"transformer.layers.\1.norm1.\2",
@@ -806,14 +906,22 @@ def remap_state_dict_megatron(state_dict, config):
         )
         bqkv = state_dict.pop(f"transformer.layers.{d}.mixer.Wqkv.bias")
         state_dict[f"transformer.layers.{d}.mixer.Wqkv.bias"] = rearrange(
-            bqkv, "(nheads three headdim) -> (three nheads headdim)", three=3, headdim=headdim
+            bqkv,
+            "(nheads three headdim) -> (three nheads headdim)",
+            three=3,
+            headdim=headdim,
         )
 
     return state_dict
 
-def create_mixer_cls(config, layer_idx=None, process_group=None, device=None, dtype=None):
+
+def create_mixer_cls(
+    config, layer_idx=None, process_group=None, device=None, dtype=None
+):
     factory_kwargs = {"device": device, "dtype": dtype}
-    head_dim = getattr(config, "head_dim", config.hidden_size // config.num_attention_heads)
+    head_dim = getattr(
+        config, "head_dim", config.hidden_size // config.num_attention_heads
+    )
     softmax_scale = 1.0 if not config.scale_attn_weights else head_dim ** (-0.5)
     if config.scale_attn_by_inverse_layer_idx:
         assert layer_idx is not None
@@ -833,7 +941,9 @@ def create_mixer_cls(config, layer_idx=None, process_group=None, device=None, dt
         assert process_group is None, "TensorParallel MHA requires fused_bias_fc"
     mha_cls = MHA if process_group is None else ParallelMHA
     serial_kwargs = (
-        {"fused_bias_fc": fused_bias_fc, "dwconv": dwconv} if process_group is None else {}
+        {"fused_bias_fc": fused_bias_fc, "dwconv": dwconv}
+        if process_group is None
+        else {}
     )
     parallel_kwargs = (
         {
@@ -883,7 +993,8 @@ def create_mlp_cls(config, layer_idx=None, process_group=None, device=None, dtyp
     fused_dense_sqrelu_dense = getattr(config, "fused_dense_sqrelu_dense", False)
     if fused_dense_sqrelu_dense:
         assert config.activation_function == "sqrelu", (
-            "fused_dense_sqrelu_dense only " "supports approximate activation_function sqrelu"
+            "fused_dense_sqrelu_dense only "
+            "supports approximate activation_function sqrelu"
         )
     assert not (fused_dense_sqrelu_dense and fused_mlp)
     if not fused_mlp and not fused_dense_sqrelu_dense:
@@ -990,7 +1101,9 @@ def create_mlp_cls(config, layer_idx=None, process_group=None, device=None, dtyp
             )
         elif fused_dense_sqrelu_dense:
             if process_group is not None:
-                assert fused_mlp, "Tensor Parallel is not implemented for FusedDenseSqreluDense"
+                assert (
+                    fused_mlp
+                ), "Tensor Parallel is not implemented for FusedDenseSqreluDense"
             assert FusedDenseSqreluDense is not None
             mlp_cls = partial(
                 FusedDenseSqreluDense,
@@ -1006,8 +1119,12 @@ def create_mlp_cls(config, layer_idx=None, process_group=None, device=None, dtyp
 def create_block(config, layer_idx=None, process_group=None, device=None, dtype=None):
     factory_kwargs = {"device": device, "dtype": dtype}
     sequence_parallel = getattr(config, "sequence_parallel", True)
-    mixer_cls = create_mixer_cls(config, layer_idx, process_group=process_group, **factory_kwargs)
-    mlp_cls = create_mlp_cls(config, layer_idx, process_group=process_group, **factory_kwargs)
+    mixer_cls = create_mixer_cls(
+        config, layer_idx, process_group=process_group, **factory_kwargs
+    )
+    mlp_cls = create_mlp_cls(
+        config, layer_idx, process_group=process_group, **factory_kwargs
+    )
     use_rms_norm = getattr(config, "rms_norm", False)
     norm_cls = partial(
         nn.LayerNorm if not use_rms_norm else RMSNorm,
@@ -1016,7 +1133,9 @@ def create_block(config, layer_idx=None, process_group=None, device=None, dtype=
     )
     # TD [2022-07-30]: Force residual in fp32, seems to make fp16 training more stable
     residual_in_fp32 = getattr(config, "residual_in_fp32", False)
-    resid_dropout1 = config.resid_pdrop if layer_idx is None or layer_idx > 0 else config.embd_pdrop
+    resid_dropout1 = (
+        config.resid_pdrop if layer_idx is None or layer_idx > 0 else config.embd_pdrop
+    )
     prenorm = getattr(config, "prenorm", True)
     parallel_block = getattr(config, "parallel_block", False)
     if not parallel_block:
