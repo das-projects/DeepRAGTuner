@@ -394,7 +394,7 @@ def config_from_meta_checkpoint(
     # Sadly it's not specified in the `params.json` file :(
     tokenizer = Path(checkpoint_path) / model_name / "tokenizer.model"
     if tokenizer.is_file():
-        config.vocab_size = SentencePieceProcessor(str(tokenizer)).vocab_size()
+        config.vocab_size = SentencePieceProcessor().Init(model_file=str(tokenizer)).vocab_size()
     return config
 
 
