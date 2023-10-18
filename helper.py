@@ -5,13 +5,13 @@ import torch
 
 @torch.no_grad()
 def generate(
-    model: torch.nn.Module,
-    idx: torch.Tensor,
-    max_returned_tokens: int,
-    *,
-    temperature: float = 1.0,
-    top_k: Optional[int] = None,
-    eos_id: Optional[int] = None,
+        model: torch.nn.Module,
+        idx: torch.Tensor,
+        max_returned_tokens: int,
+        *,
+        temperature: float = 1.0,
+        top_k: Optional[int] = None,
+        eos_id: Optional[int] = None,
 ) -> Tuple[List[int], List[float], List[Tuple[int, float]]]:
     """Takes a conditioning sequence (prompt) as input and continues to generate as many tokens as requested.
 

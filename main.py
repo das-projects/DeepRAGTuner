@@ -1,12 +1,11 @@
-from fastapi import FastAPI
-
+import json
 import logging
-
 # Lit-GPT imports
 import sys
 import time
 from pathlib import Path
-import json
+
+from fastapi import FastAPI
 
 # support running without installing as a package
 wd = Path(__file__).parent.parent.resolve()
@@ -77,7 +76,6 @@ async def process_request(input_data: ProcessRequest) -> ProcessResponse:
         model.max_seq_length = max_returned_tokens
         # enable the kv cache
         model.set_kv_cache(batch_size=1)
-
 
     t0 = time.perf_counter()
     tokens, logprobs, top_logprobs = generate(
