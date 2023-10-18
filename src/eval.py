@@ -1,99 +1,127 @@
-from typing import Any, Dict, List, Tuple
+from pathlib import Path
+from typing import List
 
 import hydra
-import rootutils
-from lightning import LightningDataModule, LightningModule, Trainer
-from lightning.pytorch.loggers import Logger
-from omegaconf import DictConfig
-
-rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
-# ------------------------------------------------------------------------------------ #
-# the setup_root above is equivalent to:
-# - adding project root dir to PYTHONPATH
-#       (so you don't need to force user to install project as a package)
-#       (necessary before importing any local modules e.g. `from src import utils`)
-# - setting up PROJECT_ROOT environment variable
-#       (which is used as a base for paths in "configs/paths/default.yaml")
-#       (this way all filepaths are the same no matter where you run the code)
-# - loading environment variables from ".env" in root dir
-#
-# you can remove it if you:
-# 1. either install project as a package or move entry files to project root dir
-# 2. set `root_dir` to "." in "configs/paths/default.yaml"
-#
-# more info: https://github.com/ashleve/rootutils
-# ------------------------------------------------------------------------------------ #
-
-from src.utils import (
-    RankedLogger,
-    extras,
-    instantiate_loggers,
-    log_hyperparameters,
-    task_wrapper,
+import torch
+from omegaconf import OmegaConf, DictConfig
+from pytorch_lightning import (
+    Callback,
+    LightningDataModule,
+    LightningModule,
+    Trainer,
 )
+from pytorch_lightning.loggers import LightningLoggerBase
 
-log = RankedLogger(__name__, rank_zero_only=True)
+from src.utils import utils
+
+log = utils.get_logger(__name__)
 
 
-@task_wrapper
-def evaluate(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    """Evaluates given checkpoint on a datamodule testset.
+def remove_prefix(text: str, prefix: str):
+    if text.startswith(prefix):
+        return text[len(prefix):]
+    return text  # or whatever
 
-    This method is wrapped in optional @task_wrapper decorator, that controls the behavior during
-    failure. Useful for multiruns, saving info about the crash, etc.
 
-    :param cfg: DictConfig configuration composed by Hydra.
-    :return: Tuple[dict, dict] with metrics and dict with all instantiated objects.
+def load_checkpoint(path, device='cpu'):
+    path = Path(path).expanduser()
+    if path.is_dir():
+        path /= 'last.ckpt'
+    # dst = f'cuda:{torch.cuda.current_device()}'
+    log.info(f'Loading checkpoint from {str(path)}')
+    state_dict = torch.load(path, map_location=device)
+    # T2T-ViT checkpoint is nested in the key 'state_dict_ema'
+    if state_dict.keys() == {'state_dict_ema'}:
+        state_dict = state_dict['state_dict_ema']
+    # Swin checkpoint is nested in the key 'model'
+    if state_dict.keys() == {'model'}:
+        state_dict = state_dict['model']
+    # Lightning checkpoint contains extra stuff, we only want the model state dict
+    if 'pytorch-lightning_version' in state_dict:
+        state_dict = {remove_prefix(k, 'model.'): v for k, v in state_dict['state_dict'].items()}
+    return state_dict
+
+
+def evaluate(config: DictConfig) -> None:
+    """Example of inference with trained model.
+    It loads trained image classification model from checkpoint.
+    Then it loads example image and predicts its label.
     """
-    assert cfg.ckpt_path
 
-    log.info(f"Instantiating datamodule <{cfg.data._target_}>")
-    datamodule: LightningDataModule = hydra.utils.instantiate(cfg.data)
+    # load model from checkpoint
+    # model __init__ parameters will be loaded from ckpt automatically
+    # you can also pass some parameter explicitly to override it
 
-    log.info(f"Instantiating model <{cfg.model._target_}>")
-    model: LightningModule = hydra.utils.instantiate(cfg.model)
+    # We want to add fields to config so need to call OmegaConf.set_struct
+    OmegaConf.set_struct(config, False)
 
-    log.info("Instantiating loggers...")
-    logger: List[Logger] = instantiate_loggers(cfg.get("logger"))
+    # load model
+    checkpoint_type = config.eval.get('checkpoint_type', 'pytorch')
+    if checkpoint_type not in ['lightning', 'pytorch']:
+        raise NotImplementedError(f'checkpoint_type ${checkpoint_type} not supported')
 
-    log.info(f"Instantiating trainer <{cfg.trainer._target_}>")
-    trainer: Trainer = hydra.utils.instantiate(cfg.trainer, logger=logger)
+    if checkpoint_type == 'lightning':
+        cls = hydra.utils.get_class(config.task._target_)
+        model = cls.load_from_checkpoint(checkpoint_path=config.eval.ckpt)
+    elif checkpoint_type == 'pytorch':
+        model_cfg = config.model_pretrained if 'model_pretrained' in config else None
+        trained_model: LightningModule = hydra.utils.instantiate(config.task, cfg=config,
+                                                                 model_cfg=model_cfg,
+                                                                 _recursive_=False)
+        if 'ckpt' in config.eval:
+            load_return = trained_model.model.load_state_dict(
+                load_checkpoint(config.eval.ckpt, device=trained_model.device), strict=False
+            )
+            log.info(load_return)
+        if 'model_pretrained' in config:
+            ...
+        else:
+            model = trained_model
 
-    object_dict = {
-        "cfg": cfg,
-        "datamodule": datamodule,
-        "model": model,
-        "logger": logger,
-        "trainer": trainer,
-    }
+    datamodule: LightningDataModule = hydra.utils.instantiate(config.datamodule)
+    # datamodule: LightningDataModule = model._datamodule
+    datamodule.prepare_data()
+    datamodule.setup()
 
-    if logger:
-        log.info("Logging hyperparameters!")
-        log_hyperparameters(object_dict)
+    # print model hyperparameters
+    log.info(f'Model hyperparameters: {model.hparams}')
 
-    log.info("Starting testing!")
-    trainer.test(model=model, datamodule=datamodule, ckpt_path=cfg.ckpt_path)
+    # Init Lightning callbacks
+    callbacks: List[Callback] = []
+    if "callbacks" in config:
+        for _, cb_conf in config["callbacks"].items():
+            if cb_conf is not None and "_target_" in cb_conf:
+                log.info(f"Instantiating callback <{cb_conf._target_}>")
+                callbacks.append(hydra.utils.instantiate(cb_conf))
 
-    # for predictions use trainer.predict(...)
-    # predictions = trainer.predict(model=model, dataloaders=dataloaders, ckpt_path=cfg.ckpt_path)
+    # Init Lightning loggers
+    logger: List[LightningLoggerBase] = []
+    if "logger" in config:
+        for _, lg_conf in config["logger"].items():
+            if lg_conf is not None and "_target_" in lg_conf:
+                log.info(f"Instantiating logger <{lg_conf._target_}>")
+                logger.append(hydra.utils.instantiate(lg_conf))
 
-    metric_dict = trainer.callback_metrics
+    # Init Lightning trainer
+    log.info(f"Instantiating trainer <{config.trainer._target_}>")
+    trainer: Trainer = hydra.utils.instantiate(
+        config.trainer, callbacks=callbacks, logger=logger, _convert_="partial"
+    )
 
-    return metric_dict, object_dict
+    # Evaluate the model
+    log.info("Starting evaluation!")
+    if config.eval.get('run_val', True):
+        trainer.validate(model=model, datamodule=datamodule)
+    if config.eval.get('run_test', True):
+        trainer.test(model=model, datamodule=datamodule)
 
-
-@hydra.main(version_base="1.3", config_path="../configs", config_name="eval.yaml")
-def main(cfg: DictConfig) -> None:
-    """Main entry point for evaluation.
-
-    :param cfg: DictConfig configuration composed by Hydra.
-    """
-    # apply extra utilities
-    # (e.g. ask for tags if none are provided in cfg, print cfg tree, etc.)
-    extras(cfg)
-
-    evaluate(cfg)
-
-
-if __name__ == "__main__":
-    main()
+    # Make sure everything closed properly
+    log.info("Finalizing!")
+    utils.finish(
+        config=config,
+        model=model,
+        datamodule=datamodule,
+        trainer=trainer,
+        callbacks=callbacks,
+        logger=logger,
+    )

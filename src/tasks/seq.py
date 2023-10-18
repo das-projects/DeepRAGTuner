@@ -5,10 +5,10 @@ import hydra
 from einops import rearrange
 from omegaconf import OmegaConf
 from pytorch_lightning import LightningModule, LightningDataModule
-from src.utils.checkpoint import load_checkpoint
 from torchmetrics import MetricCollection
 
 from src.optim.param_grouping import group_parameters_for_optimizer
+from src.utils.checkpoint import load_checkpoint
 from src.utils.utils import get_logger
 
 logger = get_logger(__name__)
@@ -157,16 +157,16 @@ class SequenceModel(LightningModule):
         # TD [2022-08-07] ['epoch_loop.batch_progress']['total']['completed'] is 1 iteration
         # behind, so we're using the optimizer's progress.
         checkpoint['loops']['fit_loop']['epoch_loop.batch_progress']['total']['completed'] = \
-        checkpoint['loops']['fit_loop']['epoch_loop.batch_loop.optimizer_loop.optim_progress']['optimizer']['step'][
-            'total']['completed'] * self.trainer.accumulate_grad_batches
+            checkpoint['loops']['fit_loop']['epoch_loop.batch_loop.optimizer_loop.optim_progress']['optimizer']['step'][
+                'total']['completed'] * self.trainer.accumulate_grad_batches
         checkpoint['loops']['fit_loop']['epoch_loop.batch_progress']['current']['completed'] = \
-        checkpoint['loops']['fit_loop']['epoch_loop.batch_loop.optimizer_loop.optim_progress']['optimizer']['step'][
-            'current']['completed'] * self.trainer.accumulate_grad_batches
+            checkpoint['loops']['fit_loop']['epoch_loop.batch_loop.optimizer_loop.optim_progress']['optimizer']['step'][
+                'current']['completed'] * self.trainer.accumulate_grad_batches
         # _batches_that_stepped tracks the number of global steps, not the number
         # of local steps, so we don't multiply with self.trainer.accumulate_grad_batches here.
         checkpoint['loops']['fit_loop']['epoch_loop.state_dict']['_batches_that_stepped'] = \
-        checkpoint['loops']['fit_loop']['epoch_loop.batch_loop.optimizer_loop.optim_progress']['optimizer']['step'][
-            'total']['completed']
+            checkpoint['loops']['fit_loop']['epoch_loop.batch_loop.optimizer_loop.optim_progress']['optimizer']['step'][
+                'total']['completed']
 
 
 class SequenceLMModel(SequenceModel):

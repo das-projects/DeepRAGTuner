@@ -7,6 +7,7 @@ from typing import Dict, Any
 
 from pytorch_lightning import Callback
 from pytorch_lightning.utilities.types import STEP_OUTPUT
+
 from src.utils.ema import ExponentialMovingAverage
 
 
