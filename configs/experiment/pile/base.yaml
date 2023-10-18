@@ -5,8 +5,8 @@ defaults:
   - override /datamodule: thepile
   - override /optimizer: adamw-apex  # slight speedup (1-2%) over Pytorch AdamW
   - override /scheduler: cosine-warmup-timm
-  - override /callbacks: [default, norm-monitor]
-  - override /metrics: [perplexity, num-tokens]
+  - override /callbacks: [ default, norm-monitor ]
+  - override /metrics: [ perplexity, num-tokens ]
   - override /logger: wandb
 
 # all parameters below will be merged with parameters from default configurations set above

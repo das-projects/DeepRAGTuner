@@ -3,7 +3,7 @@ defaults:
   - /experiment/owt/base.yaml
   - override /model: gpt2-hf
   - override /model/gpt2model: gpt2-small
-  - override /callbacks: [default, norm-monitor, flop-count]
+  - override /callbacks: [ default, norm-monitor, flop-count ]
 
 datamodule:
   batch_size: 8

@@ -8,8 +8,8 @@ defaults:
   # For GPT2-medium time per global goes from 997ms to 972ms.
   - override /optimizer: adamw-apex
   - override /scheduler: linear-warmup
-  - override /callbacks: [default, norm-monitor]
-  - override /metrics: [perplexity, num-tokens]
+  - override /callbacks: [ default, norm-monitor ]
+  - override /metrics: [ perplexity, num-tokens ]
   - override /logger: wandb
 
 # all parameters below will be merged with parameters from default configurations set above
