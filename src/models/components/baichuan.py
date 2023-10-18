@@ -1,14 +1,10 @@
 import math
-import json
 import re
-from pathlib import Path
-
 from collections import OrderedDict
+from pathlib import Path
 
 import torch
 import torch.nn.functional as F
-
-from einops import rearrange
 from transformers import GPT2Config, AutoConfig, PretrainedConfig
 
 
@@ -32,8 +28,8 @@ def remap_state_dict_hf_baichuan(state_dict, config):
     # It's possible that vocab_size is padded to be a multiple of 8, for example.
     pad_vocab_size_multiple = getattr(config, "pad_vocab_size_multiple", 1)
     vocab_size = (
-        math.ceil(word_embeddings.shape[0] / pad_vocab_size_multiple)
-        * pad_vocab_size_multiple
+            math.ceil(word_embeddings.shape[0] / pad_vocab_size_multiple)
+            * pad_vocab_size_multiple
     )
     state_dict["transformer.embeddings.word_embeddings.weight"] = F.pad(
         word_embeddings, (0, 0, 0, vocab_size - word_embeddings.shape[0])
@@ -47,8 +43,8 @@ def remap_state_dict_hf_baichuan(state_dict, config):
         # Need to recompute vocab_size since Baichuan shards the word embeddings and output embeddings
         # differently.
         vocab_size = (
-            math.ceil(output_embeddings.shape[0] / pad_vocab_size_multiple)
-            * pad_vocab_size_multiple
+                math.ceil(output_embeddings.shape[0] / pad_vocab_size_multiple)
+                * pad_vocab_size_multiple
         )
         # It's possible that vocab_size is padded to be a multiple of 8, for example.
         state_dict["lm_head.weight"] = F.pad(
@@ -119,7 +115,7 @@ def config_from_checkpoint(checkpoint_path: str, model_name: str) -> PretrainedC
     return config
 
 
-def state_dicts_from_checkpoint(checkpoint_path: str, model_name: str) -> dict:
+def state_dicts_from_checkpoint(checkpoint_path: str, model_name: str) -> list:
     # Need to sort, otherwise we mess up the ordering and the weights are wrong
     return [
         torch.load(path, map_location="cpu")

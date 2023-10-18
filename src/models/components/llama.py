@@ -10,14 +10,13 @@ from typing import Dict, List, Union
 
 import torch
 import torch.nn.functional as F
+from einops import rearrange
 from sentencepiece import SentencePieceProcessor
 from transformers import GPT2Config, LlamaConfig
 
-from einops import rearrange
-
 
 def remap_state_dict_meta_llama(
-    state_dict: Dict[str, torch.Tensor], config: GPT2Config
+        state_dict: Dict[str, torch.Tensor], config: GPT2Config
 ) -> Dict[str, torch.Tensor]:
     """Convert the state_dict in Meta format to standard GPT format.
 
@@ -42,8 +41,8 @@ def remap_state_dict_meta_llama(
     # It's possible that vocab_size is padded to be a multiple of 8, for example.
     pad_vocab_size_multiple = getattr(config, "pad_vocab_size_multiple", 1)
     vocab_size = (
-        math.ceil(word_embeddings.shape[0] / pad_vocab_size_multiple)
-        * pad_vocab_size_multiple
+            math.ceil(word_embeddings.shape[0] / pad_vocab_size_multiple)
+            * pad_vocab_size_multiple
     )
     state_dict["transformer.embeddings.word_embeddings.weight"] = F.pad(
         word_embeddings, (0, 0, 0, vocab_size - word_embeddings.shape[0])
@@ -57,8 +56,8 @@ def remap_state_dict_meta_llama(
         # Need to recompute vocab_size since LLaMa shards the word embeddings and output embeddings
         # differently.
         vocab_size = (
-            math.ceil(output_embeddings.shape[0] / pad_vocab_size_multiple)
-            * pad_vocab_size_multiple
+                math.ceil(output_embeddings.shape[0] / pad_vocab_size_multiple)
+                * pad_vocab_size_multiple
         )
         # It's possible that vocab_size is padded to be a multiple of 8, for example.
         state_dict["lm_head.weight"] = F.pad(
@@ -126,7 +125,7 @@ def remap_state_dict_meta_llama(
 
 
 def remap_state_dict_hf_llama(
-    state_dict: Dict[str, torch.Tensor], config: GPT2Config
+        state_dict: Dict[str, torch.Tensor], config: GPT2Config
 ) -> Dict[str, torch.Tensor]:
     """Convert the state_dict in Hugging Face format to standard GPT format.
 
@@ -144,8 +143,8 @@ def remap_state_dict_hf_llama(
     # It's possible that vocab_size is padded to be a multiple of 8, for example.
     pad_vocab_size_multiple = getattr(config, "pad_vocab_size_multiple", 1)
     vocab_size = (
-        math.ceil(word_embeddings.shape[0] / pad_vocab_size_multiple)
-        * pad_vocab_size_multiple
+            math.ceil(word_embeddings.shape[0] / pad_vocab_size_multiple)
+            * pad_vocab_size_multiple
     )
     state_dict["transformer.embeddings.word_embeddings.weight"] = F.pad(
         word_embeddings, (0, 0, 0, vocab_size - word_embeddings.shape[0])
@@ -161,8 +160,8 @@ def remap_state_dict_hf_llama(
         # Need to recompute vocab_size since LLaMa shards the word embeddings and output embeddings
         # differently.
         vocab_size = (
-            math.ceil(output_embeddings.shape[0] / pad_vocab_size_multiple)
-            * pad_vocab_size_multiple
+                math.ceil(output_embeddings.shape[0] / pad_vocab_size_multiple)
+                * pad_vocab_size_multiple
         )
         # It's possible that vocab_size is padded to be a multiple of 8, for example.
         state_dict["lm_head.weight"] = F.pad(
@@ -240,7 +239,7 @@ def remap_state_dict_hf_llama(
 
 
 def inv_remap_state_dict_hf_llama(
-    state_dict: Dict[str, torch.Tensor], config: GPT2Config
+        state_dict: Dict[str, torch.Tensor], config: GPT2Config
 ) -> Dict[str, torch.Tensor]:
     """Convert the state_dict in standard GPT format to Hugging Face format.
 
@@ -262,8 +261,8 @@ def inv_remap_state_dict_hf_llama(
     word_embeddings = state_dict.pop("model.embed_tokens.weight")
     pad_vocab_size_multiple = getattr(config, "pad_vocab_size_multiple", 1)
     vocab_size = (
-        math.ceil(word_embeddings.shape[0] / pad_vocab_size_multiple)
-        * pad_vocab_size_multiple
+            math.ceil(word_embeddings.shape[0] / pad_vocab_size_multiple)
+            * pad_vocab_size_multiple
     )
     state_dict["model.embed_tokens.weight"] = F.pad(
         word_embeddings, (0, 0, 0, vocab_size - word_embeddings.shape[0])
@@ -275,8 +274,8 @@ def inv_remap_state_dict_hf_llama(
     else:
         output_embeddings = state_dict.pop("lm_head.weight")
         vocab_size = (
-            math.ceil(output_embeddings.shape[0] / pad_vocab_size_multiple)
-            * pad_vocab_size_multiple
+                math.ceil(output_embeddings.shape[0] / pad_vocab_size_multiple)
+                * pad_vocab_size_multiple
         )
         state_dict["lm_head.weight"] = F.pad(
             output_embeddings, (0, 0, 0, vocab_size - output_embeddings.shape[0])
@@ -337,8 +336,8 @@ def inv_remap_state_dict_hf_llama(
     for l in range(config.n_layer):
         Wqkv = state_dict.pop(f"transformer.layers.{l}.mixer.Wqkv.weight")
         Wq = Wqkv[:q_dim]
-        Wk = Wqkv[q_dim : q_dim + k_dim]
-        Wv = Wqkv[q_dim + k_dim : q_dim + k_dim + v_dim]
+        Wk = Wqkv[q_dim: q_dim + k_dim]
+        Wv = Wqkv[q_dim + k_dim: q_dim + k_dim + v_dim]
         state_dict[f"model.layers.{l}.self_attn.q_proj.weight"] = permute(Wq)
         state_dict[f"model.layers.{l}.self_attn.k_proj.weight"] = permute(Wk)
         state_dict[f"model.layers.{l}.self_attn.v_proj.weight"] = Wv
@@ -358,7 +357,7 @@ def inv_remap_state_dict_hf_llama(
 
 
 def config_from_meta_checkpoint(
-    checkpoint_path: Union[str, os.PathLike], model_name: str
+        checkpoint_path: Union[str, os.PathLike], model_name: str
 ) -> LlamaConfig:
     """Load a LlamaConfig from a checkpoint path."""
     with open(Path(checkpoint_path) / model_name / "params.json") as f:
@@ -383,7 +382,7 @@ def config_from_meta_checkpoint(
     if ffn_dim_multiplier is not None:
         intermediate_size = int(ffn_dim_multiplier * intermediate_size)
     intermediate_size = multiple_of * (
-        (intermediate_size + multiple_of - 1) // multiple_of
+            (intermediate_size + multiple_of - 1) // multiple_of
     )
 
     config.intermediate_size = intermediate_size
@@ -399,7 +398,7 @@ def config_from_meta_checkpoint(
 
 
 def config_from_hf_checkpoint(
-    checkpoint_path: Union[str, os.PathLike], model_name: str
+        checkpoint_path: Union[str, os.PathLike], model_name: str
 ) -> LlamaConfig:
     return LlamaConfig.from_pretrained(
         Path(checkpoint_path) / f"{model_name}-hf" / "config.json"
@@ -407,7 +406,7 @@ def config_from_hf_checkpoint(
 
 
 def config_from_checkpoint(
-    checkpoint_path: Union[str, os.PathLike], model_name: str, checkpoint_format="meta"
+        checkpoint_path: Union[str, os.PathLike], model_name: str, checkpoint_format="meta"
 ) -> LlamaConfig:
     if checkpoint_format == "meta":
         return config_from_meta_checkpoint(checkpoint_path, model_name)
@@ -416,7 +415,7 @@ def config_from_checkpoint(
 
 
 def state_dicts_from_checkpoint(
-    checkpoint_path: Union[str, os.PathLike], model_name: str
+        checkpoint_path: Union[str, os.PathLike], model_name: str
 ) -> List[dict]:
     # Need to sort, otherwise we mess up the ordering and the weights are wrong
     return [

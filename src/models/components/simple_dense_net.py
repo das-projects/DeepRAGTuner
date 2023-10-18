@@ -6,12 +6,12 @@ class SimpleDenseNet(nn.Module):
     """A simple fully-connected neural net for computing predictions."""
 
     def __init__(
-        self,
-        input_size: int = 784,
-        lin1_size: int = 256,
-        lin2_size: int = 256,
-        lin3_size: int = 256,
-        output_size: int = 10,
+            self,
+            input_size: int = 784,
+            lin1_size: int = 256,
+            lin2_size: int = 256,
+            lin3_size: int = 256,
+            output_size: int = 10,
     ) -> None:
         """Initialize a `SimpleDenseNet` module.
 

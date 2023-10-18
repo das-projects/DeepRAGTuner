@@ -1,24 +1,20 @@
 # Copyright (c) 2022, Tri Dao.
 # Inspired by / adapted from https://github.com/rwightman/pytorch-image-models/blob/master/timm/models/vision_transformer.py
-import math
 import re
 from collections import OrderedDict
-from copy import deepcopy
 from functools import partial
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from einops import rearrange
-from timm.models import named_apply
-from torch.nn.init import trunc_normal_
-from torchvision.ops import StochasticDepth
-
 from flash_attn.layers.patch_embed import PatchEmbed
 from flash_attn.modules.block import Block
 from flash_attn.modules.mha import MHA
 from flash_attn.modules.mlp import FusedMLP, Mlp
 from flash_attn.ops.layer_norm import dropout_add_layer_norm
+from timm.models import named_apply
+from torch.nn.init import trunc_normal_
+from torchvision.ops import StochasticDepth
 
 
 class VisionTransformer(nn.Module):
@@ -28,33 +24,33 @@ class VisionTransformer(nn.Module):
     """
 
     def __init__(
-        self,
-        img_size=224,
-        patch_size=16,
-        in_chans=3,
-        num_classes=1000,
-        global_pool="token",
-        embed_dim=768,
-        depth=12,
-        num_heads=12,
-        mlp_ratio=4.0,
-        qkv_bias=True,
-        init_values=None,
-        class_token=True,
-        no_embed_class=False,
-        pre_norm=False,
-        fc_norm=None,
-        drop_rate=0.0,
-        attn_drop_rate=0.0,
-        drop_path_rate=0.0,
-        weight_init="",
-        embed_layer=PatchEmbed,
-        norm_layer=None,
-        act_layer=None,
-        use_flash_attn=False,
-        fused_bias_fc=False,
-        fused_mlp=False,
-        fused_dropout_add_ln=False,
+            self,
+            img_size=224,
+            patch_size=16,
+            in_chans=3,
+            num_classes=1000,
+            global_pool="token",
+            embed_dim=768,
+            depth=12,
+            num_heads=12,
+            mlp_ratio=4.0,
+            qkv_bias=True,
+            init_values=None,
+            class_token=True,
+            no_embed_class=False,
+            pre_norm=False,
+            fc_norm=None,
+            drop_rate=0.0,
+            attn_drop_rate=0.0,
+            drop_path_rate=0.0,
+            weight_init="",
+            embed_layer=PatchEmbed,
+            norm_layer=None,
+            act_layer=None,
+            use_flash_attn=False,
+            fused_bias_fc=False,
+            fused_mlp=False,
+            fused_dropout_add_ln=False,
     ):
         """
         Args:
@@ -184,6 +180,7 @@ class VisionTransformer(nn.Module):
             use_flash_attn=use_flash_attn,
         )
         return mixer_cls
+
     @staticmethod
     def create_mlp_cls(embed_dim, mlp_ratio, act_layer, fused_mlp):
         inner_dim = int(embed_dim * mlp_ratio)
@@ -319,7 +316,7 @@ class VisionTransformer(nn.Module):
     def forward_head(self, x, pre_logits: bool = False):
         if self.global_pool:
             x = (
-                x[:, self.num_prefix_tokens :].mean(dim=1)
+                x[:, self.num_prefix_tokens:].mean(dim=1)
                 if self.global_pool == "avg"
                 else x[:, 0]
             )
@@ -349,17 +346,17 @@ class VisionTransformer(nn.Module):
         n_layer = len(self.blocks)
         # Convert from Wqkv to Wq and Wkv for cross attention (last layer)
         if (
-            self.blocks[-1].mixer.cross_attn
-            and f"blocks.{n_layer - 1}.mixer.Wqkv.weight" in state_dict
+                self.blocks[-1].mixer.cross_attn
+                and f"blocks.{n_layer - 1}.mixer.Wqkv.weight" in state_dict
         ):
             Wqkv = state_dict.pop(f"blocks.{n_layer - 1}.mixer.Wqkv.weight")
             bqkv = state_dict.pop(f"blocks.{n_layer - 1}.mixer.Wqkv.bias")
             state_dict[f"blocks.{n_layer - 1}.mixer.Wq.weight"] = Wqkv[: self.embed_dim]
             state_dict[f"blocks.{n_layer - 1}.mixer.Wkv.weight"] = Wqkv[
-                self.embed_dim :
-            ]
+                                                                   self.embed_dim:
+                                                                   ]
             state_dict[f"blocks.{n_layer - 1}.mixer.Wq.bias"] = bqkv[: self.embed_dim]
-            state_dict[f"blocks.{n_layer - 1}.mixer.Wkv.bias"] = bqkv[self.embed_dim :]
+            state_dict[f"blocks.{n_layer - 1}.mixer.Wkv.bias"] = bqkv[self.embed_dim:]
         return super().load_state_dict(state_dict, strict=strict)
 
 

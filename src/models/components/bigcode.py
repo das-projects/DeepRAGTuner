@@ -23,7 +23,7 @@ def remap_state_dict_hf_bigcode(state_dict, config: PretrainedConfig):
     # It's possible that vocab_size is padded to be a multiple of 8, for example.
     pad_vocab_size_multiple = getattr(config, "pad_vocab_size_multiple", 1)
     vocab_size = (
-        math.ceil(config.vocab_size / pad_vocab_size_multiple) * pad_vocab_size_multiple
+            math.ceil(config.vocab_size / pad_vocab_size_multiple) * pad_vocab_size_multiple
     )
     state_dict["transformer.embeddings.word_embeddings.weight"] = F.pad(
         word_embeddings, (0, 0, 0, vocab_size - word_embeddings.shape[0])

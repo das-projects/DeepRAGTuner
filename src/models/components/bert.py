@@ -3,34 +3,30 @@ import re
 from collections import OrderedDict
 from collections.abc import Sequence
 from functools import partial
-from typing import Any, Mapping
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
-from transformers import BertConfig, PretrainedConfig
-from transformers.models.bert.modeling_bert import (
-    BaseModelOutputWithPoolingAndCrossAttentions,
-    BertForPreTrainingOutput,
-)
-
 from flash_attn.bert_padding import (
     index_first_axis,
     index_first_axis_residual,
     pad_input,
     unpad_input,
 )
+from flash_attn.losses.cross_entropy import CrossEntropyLoss
 from flash_attn.modules.block import Block
 from flash_attn.modules.embedding import BertEmbeddings
 from flash_attn.modules.mha import MHA
 from flash_attn.modules.mlp import FusedMLP, Mlp
-from flash_attn.utils.pretrained import state_dict_from_pretrained
-
 from flash_attn.ops.fused_dense import FusedDense
-from flash_attn.ops.layer_norm import dropout_add_layer_norm, layer_norm
-from flash_attn.losses.cross_entropy import CrossEntropyLoss
-
+from flash_attn.ops.layer_norm import layer_norm
+from flash_attn.utils.pretrained import state_dict_from_pretrained
+from transformers import BertConfig, PretrainedConfig
+from transformers.models.bert.modeling_bert import (
+    BaseModelOutputWithPoolingAndCrossAttentions,
+    BertForPreTrainingOutput,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -342,7 +338,7 @@ class BertModel(BertPreTrainedModel):
         self.pad_vocab_size_multiple = getattr(config, "pad_vocab_size_multiple", 1)
         if config.vocab_size % self.pad_vocab_size_multiple != 0:
             config.vocab_size += self.pad_vocab_size_multiple - (
-                config.vocab_size % self.pad_vocab_size_multiple
+                    config.vocab_size % self.pad_vocab_size_multiple
             )
         self.fused_dropout_add_ln = getattr(config, "fused_dropout_add_ln", False)
         if self.fused_dropout_add_ln and layer_norm is None:
@@ -369,12 +365,12 @@ class BertModel(BertPreTrainedModel):
         self.apply(partial(_init_weights, initializer_range=config.initializer_range))
 
     def forward(
-        self,
-        input_ids,
-        position_ids=None,
-        token_type_ids=None,
-        attention_mask=None,
-        masked_tokens_mask=None,
+            self,
+            input_ids,
+            position_ids=None,
+            token_type_ids=None,
+            attention_mask=None,
+            masked_tokens_mask=None,
     ):
         """If masked_tokens_mask is not None (i.e. last_layer_subset == True in BertForPreTraining),
         we only want the output for the masked tokens. This means that we only compute the last
@@ -469,13 +465,13 @@ class BertForPreTraining(BertPreTrainedModel):
         )
 
     def forward(
-        self,
-        input_ids,
-        position_ids=None,
-        token_type_ids=None,
-        attention_mask=None,
-        labels=None,
-        next_sentence_label=None,
+            self,
+            input_ids,
+            position_ids=None,
+            token_type_ids=None,
+            attention_mask=None,
+            labels=None,
+            next_sentence_label=None,
     ):
         """
         If labels are provided, they must be 0 for masked out tokens (as specified in the attention
@@ -521,7 +517,7 @@ class BertForPreTraining(BertPreTrainedModel):
         total_loss = None
         if labels is not None and next_sentence_label is not None:
             if (
-                self.dense_seq_output and labels is not None
+                    self.dense_seq_output and labels is not None
             ):  # prediction_scores are already flattened
                 masked_lm_loss = self.mlm_loss(
                     prediction_scores, labels.flatten()[masked_token_idx]
@@ -681,14 +677,14 @@ def inv_remap_state_dict(state_dict, config: PretrainedConfig):
         decoder_bias = state_dict["cls.predictions.decoder.bias"]
         # unpad embeddings
         state_dict["bert.embeddings.word_embeddings.weight"] = word_embeddings[
-            : config.orig_vocab_size, :
-        ]
+                                                               : config.orig_vocab_size, :
+                                                               ]
         state_dict["cls.predictions.decoder.weight"] = decoder_weight[
-            : config.orig_vocab_size, :
-        ]
+                                                       : config.orig_vocab_size, :
+                                                       ]
         state_dict["cls.predictions.decoder.bias"] = decoder_bias[
-            : config.orig_vocab_size
-        ]
+                                                     : config.orig_vocab_size
+                                                     ]
 
     for d in range(config.num_hidden_layers):
         last_layer_subset = getattr(config, "last_layer_subset", False)
@@ -701,20 +697,20 @@ def inv_remap_state_dict(state_dict, config: PretrainedConfig):
             state_dict[
                 f"bert.encoder.layers.{d}.attention.self.key.weight"
             ] = Wqkv_weights[
-                Wqkv_weights.shape[0] // 3 : 2 * Wqkv_weights.shape[0] // 3, :
-            ]
+                Wqkv_weights.shape[0] // 3: 2 * Wqkv_weights.shape[0] // 3, :
+                ]
             state_dict[
                 f"bert.encoder.layers.{d}.attention.self.value.weight"
-            ] = Wqkv_weights[2 * Wqkv_weights.shape[0] // 3 :, :]
+            ] = Wqkv_weights[2 * Wqkv_weights.shape[0] // 3:, :]
             state_dict[
                 f"bert.encoder.layers.{d}.attention.self.query.bias"
             ] = Wqkv_biases[: Wqkv_biases.shape[0] // 3]
             state_dict[
                 f"bert.encoder.layers.{d}.attention.self.key.bias"
-            ] = Wqkv_biases[Wqkv_biases.shape[0] // 3 : 2 * Wqkv_biases.shape[0] // 3]
+            ] = Wqkv_biases[Wqkv_biases.shape[0] // 3: 2 * Wqkv_biases.shape[0] // 3]
             state_dict[
                 f"bert.encoder.layers.{d}.attention.self.value.bias"
-            ] = Wqkv_biases[2 * Wqkv_biases.shape[0] // 3 :]
+            ] = Wqkv_biases[2 * Wqkv_biases.shape[0] // 3:]
         else:
             Wq_weight = state_dict.pop(f"bert.encoder.layers.{d}.mixer.Wq.weight")
             Wkv_weights = state_dict.pop(f"bert.encoder.layers.{d}.mixer.Wkv.weight")
@@ -728,14 +724,14 @@ def inv_remap_state_dict(state_dict, config: PretrainedConfig):
             ] = Wkv_weights[: Wkv_weights.shape[0] // 2, :]
             state_dict[
                 f"bert.encoder.layers.{d}.attention.self.value.weight"
-            ] = Wkv_weights[Wkv_weights.shape[0] // 2 :, :]
+            ] = Wkv_weights[Wkv_weights.shape[0] // 2:, :]
             state_dict[f"bert.encoder.layers.{d}.attention.self.query.bias"] = Wq_bias
             state_dict[f"bert.encoder.layers.{d}.attention.self.key.bias"] = Wkv_biases[
-                : Wkv_biases.shape[0] // 2
-            ]
+                                                                             : Wkv_biases.shape[0] // 2
+                                                                             ]
             state_dict[
                 f"bert.encoder.layers.{d}.attention.self.value.bias"
-            ] = Wkv_biases[Wkv_biases.shape[0] // 2 :]
+            ] = Wkv_biases[Wkv_biases.shape[0] // 2:]
 
     def inv_key_mapping_ln(key):
         key = re.sub(r"bert.emb_ln.", "bert.embeddings.LayerNorm.", key)

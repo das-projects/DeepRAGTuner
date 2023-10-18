@@ -10,8 +10,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
-from transformers import GPT2Config
-
 from flash_attn.models.bigcode import remap_state_dict_hf_bigcode
 from flash_attn.models.falcon import remap_state_dict_hf_falcon
 from flash_attn.models.gpt_neox import remap_state_dict_hf_gpt_neox
@@ -30,14 +28,6 @@ from flash_attn.modules.mlp import (
     ParallelMLP,
 )
 from flash_attn.ops.activations import sqrelu_fwd
-from flash_attn.utils.distributed import (
-    all_gather_raw,
-    get_dim_for_local_rank,
-    sync_shared_params,
-)
-from flash_attn.utils.generation import GenerationMixin
-from flash_attn.utils.pretrained import state_dict_from_pretrained
-
 from flash_attn.ops.fused_dense import ColumnParallelLinear
 from flash_attn.ops.layer_norm import (
     dropout_add_layer_norm,
@@ -49,6 +39,14 @@ from flash_attn.ops.rms_norm import (
     dropout_add_rms_norm_parallel_residual,
 )
 from flash_attn.ops.triton.mlp import FusedDenseSqreluDense
+from flash_attn.utils.distributed import (
+    all_gather_raw,
+    get_dim_for_local_rank,
+    sync_shared_params,
+)
+from flash_attn.utils.generation import GenerationMixin
+from flash_attn.utils.pretrained import state_dict_from_pretrained
+from transformers import GPT2Config
 
 logger = logging.getLogger(__name__)
 
@@ -72,16 +70,16 @@ class GPTPreTrainedModel(nn.Module):
 
     @classmethod
     def from_pretrained(
-        cls,
-        model_name,
-        config,
-        *args,
-        strict=True,
-        device=None,
-        dtype=None,
-        world_size=1,
-        rank=0,
-        **kwargs,
+            cls,
+            model_name,
+            config,
+            *args,
+            strict=True,
+            device=None,
+            dtype=None,
+            world_size=1,
+            rank=0,
+            **kwargs,
     ):
         """
         Instantiate a GPTPreTrainedModel from a pre-trained model file or a pytorch state dict.
@@ -97,13 +95,13 @@ class GPTPreTrainedModel(nn.Module):
         elif model_name.startswith("facebook/opt"):
             state_dict = remap_state_dict_hf_opt(state_dict, config)
         elif model_name.startswith("EleutherAI/gpt-j-") or model_name.startswith(
-            "togethercomputer/GPT-JT-"
+                "togethercomputer/GPT-JT-"
         ):
             state_dict = remap_state_dict_hf_gptj(state_dict, config)
         elif (
-            model_name.startswith("EleutherAI/gpt-neox-")
-            or model_name.startswith("EleutherAI/pythia-")
-            or model_name.startswith("togethercomputer/RedPajama-INCITE-")
+                model_name.startswith("EleutherAI/gpt-neox-")
+                or model_name.startswith("EleutherAI/pythia-")
+                or model_name.startswith("togethercomputer/RedPajama-INCITE-")
         ):
             state_dict = remap_state_dict_hf_gpt_neox(state_dict, config)
         elif model_name.startswith("tiiuae/falcon-"):
@@ -170,8 +168,8 @@ class GPTModel(GPTPreTrainedModel):
         ]
         pad_vocab_size_multiple = getattr(config, "pad_vocab_size_multiple", 1)
         vocab_size = (
-            math.ceil(config.vocab_size / pad_vocab_size_multiple)
-            * pad_vocab_size_multiple
+                math.ceil(config.vocab_size / pad_vocab_size_multiple)
+                * pad_vocab_size_multiple
         )
         # TD [2022-07-30]: Force residual in fp32, seems to make fp16 training more stable
         self.residual_in_fp32 = getattr(config, "residual_in_fp32", False)
@@ -218,7 +216,7 @@ class GPTModel(GPTPreTrainedModel):
         self.fused_dropout_add_ln = getattr(config, "fused_dropout_add_ln", False)
         if self.fused_dropout_add_ln:
             if (not self.parallel_block and dropout_add_layer_norm is None) or (
-                self.parallel_block and dropout_add_layer_norm_parallel_residual is None
+                    self.parallel_block and dropout_add_layer_norm_parallel_residual is None
             ):
                 raise ImportError("dropout_layer_norm is not installed")
         if self.prenorm:
@@ -595,8 +593,8 @@ class GPTLMHeadModel(GPTPreTrainedModel, GenerationMixin):
         lm_head_bias = getattr(config, "lm_head_bias", False)
         pad_vocab_size_multiple = getattr(config, "pad_vocab_size_multiple", 1)
         vocab_size = (
-            math.ceil(config.vocab_size / pad_vocab_size_multiple)
-            * pad_vocab_size_multiple
+                math.ceil(config.vocab_size / pad_vocab_size_multiple)
+                * pad_vocab_size_multiple
         )
         # This option is for OPT-350m
         word_embed_proj_dim = getattr(config, "word_embed_proj_dim", None)
@@ -646,7 +644,7 @@ class GPTLMHeadModel(GPTPreTrainedModel, GenerationMixin):
         )
 
     def forward(
-        self, input_ids, position_ids=None, inference_params=None, num_last_tokens=0
+            self, input_ids, position_ids=None, inference_params=None, num_last_tokens=0
     ):
         """
         input_ids: (batch, seqlen) int tensor
@@ -655,7 +653,7 @@ class GPTLMHeadModel(GPTPreTrainedModel, GenerationMixin):
         num_last_tokens: if > 0, only return the logits for the last n tokens
         """
         assert (
-            input_ids.ndim == 2
+                input_ids.ndim == 2
         ), f"Expected `input_ids` to have shape [b, slen], but got shape {input_ids.shape}"
         b, slen = input_ids.shape
         hidden_states = self.transformer(
@@ -663,7 +661,7 @@ class GPTLMHeadModel(GPTPreTrainedModel, GenerationMixin):
         )
         if inference_params is not None:
             assert (
-                hidden_states.ndim == 3
+                    hidden_states.ndim == 3
             ), "sequence_parallel is not supported in generation mode"
         if num_last_tokens > 0:
             hidden_states = hidden_states[:, -num_last_tokens:]
@@ -672,8 +670,8 @@ class GPTLMHeadModel(GPTPreTrainedModel, GenerationMixin):
         lm_logits = self.lm_head(hidden_states)
         # During inference, we want the full logit for sampling
         if (
-            isinstance(self.lm_head, ColumnParallelLinear)
-            and inference_params is not None
+                isinstance(self.lm_head, ColumnParallelLinear)
+                and inference_params is not None
         ):
             lm_logits, _ = all_gather_raw(lm_logits, self.lm_head.process_group)
             lm_logits = rearrange(lm_logits, "(n b) ... d -> b ... (n d)", b=b)
@@ -719,7 +717,7 @@ def shard_state_dict_tp(state_dict, config, world_size, rank):
     """
     pad_vocab_size_multiple = getattr(config, "pad_vocab_size_multiple", 1)
     vocab_size = (
-        math.ceil(config.vocab_size / pad_vocab_size_multiple) * pad_vocab_size_multiple
+            math.ceil(config.vocab_size / pad_vocab_size_multiple) * pad_vocab_size_multiple
     )
     assert vocab_size % world_size == 0
     assert config.hidden_size % world_size == 0
@@ -736,7 +734,7 @@ def shard_state_dict_tp(state_dict, config, world_size, rank):
         if key in state_dict:
             x = state_dict[key]
             dim = x.shape[0] // world_size
-            state_dict[key] = x[rank * dim : (rank + 1) * dim]
+            state_dict[key] = x[rank * dim: (rank + 1) * dim]
 
     def shard_last_dim(state_dict, key, multiple_of=1):
         if key in state_dict:
@@ -754,7 +752,7 @@ def shard_state_dict_tp(state_dict, config, world_size, rank):
             dim = x.shape[0] // world_size // 2
             state_dict[key] = rearrange(
                 rearrange(x, "(two o) ... -> two o ...", two=2)[
-                    :, rank * dim : (rank + 1) * dim
+                :, rank * dim: (rank + 1) * dim
                 ],
                 "two o ... -> (two o) ...",
             )
@@ -779,7 +777,7 @@ def shard_state_dict_tp(state_dict, config, world_size, rank):
             if n_head_kv == n_head:
                 x = rearrange(state_dict[key], "(three d) ... -> three d ...", three=3)
                 state_dict[key] = rearrange(
-                    x[:, beg_n_head * head_dim : end_n_head * head_dim],
+                    x[:, beg_n_head * head_dim: end_n_head * head_dim],
                     "three d ... -> (three d) ...",
                 )
             else:
@@ -792,13 +790,13 @@ def shard_state_dict_tp(state_dict, config, world_size, rank):
                     torch.cat(
                         [
                             x[beg_n_head:end_n_head],
-                            x[n_head + beg_n_head_kv : n_head + end_n_head_kv],
+                            x[n_head + beg_n_head_kv: n_head + end_n_head_kv],
                             x[
-                                n_head
-                                + n_head_kv
-                                + beg_n_head_kv : n_head
-                                + n_head_kv
-                                + end_n_head_kv
+                            n_head
+                            + n_head_kv
+                            + beg_n_head_kv: n_head
+                                             + n_head_kv
+                                             + end_n_head_kv
                             ],
                         ],
                         dim=0,
@@ -834,7 +832,7 @@ def shard_state_dict_tp(state_dict, config, world_size, rank):
 
 
 def combine_state_dicts_tp(
-    state_dicts: List[Dict[str, torch.Tensor]], config: GPT2Config
+        state_dicts: List[Dict[str, torch.Tensor]], config: GPT2Config
 ):
     """Convert the list of sharded state_dict of a GPT model with tensor parallel to
     the state_dict of a standard GPT model.
@@ -848,7 +846,7 @@ def combine_state_dicts_tp(
     keys = state_dicts[0].keys()
     pad_vocab_size_multiple = getattr(config, "pad_vocab_size_multiple", 1)
     vocab_size = (
-        math.ceil(config.vocab_size / pad_vocab_size_multiple) * pad_vocab_size_multiple
+            math.ceil(config.vocab_size / pad_vocab_size_multiple) * pad_vocab_size_multiple
     )
     assert vocab_size % world_size == 0
     assert config.hidden_size % world_size == 0
@@ -905,8 +903,8 @@ def combine_state_dicts_tp(
                 wk = torch.cat(
                     [
                         x[
-                            n_head_each_rank[rank] : n_head_each_rank[rank]
-                            + n_head_kv_each_rank[rank]
+                        n_head_each_rank[rank]: n_head_each_rank[rank]
+                                                + n_head_kv_each_rank[rank]
                         ]
                         for rank, x in enumerate(xs)
                     ],
@@ -914,7 +912,7 @@ def combine_state_dicts_tp(
                 )
                 wv = torch.cat(
                     [
-                        x[n_head_each_rank[rank] + n_head_kv_each_rank[rank] :]
+                        x[n_head_each_rank[rank] + n_head_kv_each_rank[rank]:]
                         for rank, x in enumerate(xs)
                     ],
                     dim=0,
@@ -986,7 +984,7 @@ def remap_state_dict_hf_gpt2(state_dict, config):
     # It's possible that vocab_size is padded to be a multiple of 8, for example.
     pad_vocab_size_multiple = getattr(config, "pad_vocab_size_multiple", 1)
     vocab_size = (
-        math.ceil(config.vocab_size / pad_vocab_size_multiple) * pad_vocab_size_multiple
+            math.ceil(config.vocab_size / pad_vocab_size_multiple) * pad_vocab_size_multiple
     )
     state_dict["transformer.embeddings.word_embeddings.weight"] = F.pad(
         word_embeddings, (0, 0, 0, vocab_size - word_embeddings.shape[0])
@@ -1066,8 +1064,8 @@ def remap_state_dict_megatron(state_dict, config):
     # It's possible that vocab_size is padded to be a multiple of 8, for example.
     pad_vocab_size_multiple = getattr(config, "pad_vocab_size_multiple", 1)
     vocab_size = (
-        math.ceil(word_embeddings.shape[0] / pad_vocab_size_multiple)
-        * pad_vocab_size_multiple
+            math.ceil(word_embeddings.shape[0] / pad_vocab_size_multiple)
+            * pad_vocab_size_multiple
     )
     state_dict["transformer.embeddings.word_embeddings.weight"] = F.pad(
         word_embeddings, (0, 0, 0, vocab_size - word_embeddings.shape[0])
@@ -1151,5 +1149,3 @@ def remap_state_dict_megatron(state_dict, config):
         )
 
     return state_dict
-
-
