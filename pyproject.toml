@@ -1,25 +1,138 @@
-[tool.pytest.ini_options]
-addopts = [
-    "--color=yes",
-    "--durations=0",
-    "--strict-markers",
-    "--doctest-modules",
-]
-filterwarnings = [
-    "ignore::DeprecationWarning",
-    "ignore::UserWarning",
-]
-log_cli = "True"
-markers = [
-    "slow: slow tests",
-]
-minversion = "6.0"
-testpaths = "tests/"
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
-[tool.coverage.report]
-exclude_lines = [
-    "pragma: nocover",
-    "raise NotImplementedError",
-    "raise NotImplementedError()",
-    "if __name__ == .__main__.:",
+
+[project]
+name = "deepragtuner"
+authors = [{name = "Arijit Das", email = "arijit.das@selfsupervised.de"}]
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "Apache 2.0"}
+dynamic = ["version", "description"]
+packages = [ 
+     { include = "finetune" }
+ ]
+dependencies = [
+    "scikit-learn",
+    "transformers",
+    "peft",
+    "accelerate",
+    "sentencepiece",
+    "datasets",
+    "torch",
+    "hnswlib",
+    "evaluate",
+    "tqdm",
+    "peft",
+    "diffusers",
+    "bitsandbytes",
+    "typer>=0.9.0,<1.0",
+    "pydantic",  # Sync w/ other platform components
 ]
+
+[project.scripts]
+dalm = "dalm.cli:cli"
+
+[tool.hatch.build.targets.wheel.shared-data]
+"prefix" = "prefix"
+
+[tool.hatch.version]
+path = "finetune/__init__.py"
+
+
+[project.optional-dependencies]
+dev = [
+    "black",
+    "boto3-stubs",
+    "build",
+    "httpx",
+    "invoke",
+    "jupyter",
+    "mypy",
+    "pre-commit",
+    "pytest-cov",
+    "pytest-mock",
+    "pytest-timeout",
+    "pytest",
+    "python-dotenv",
+    "rich",
+    "ruff",
+    "types-cachetools",
+    "types-markdown",
+    "types-PyYAML",
+    "types-requests",
+    "types-tqdm",
+    "packaging",
+    "pandas-stubs"
+]
+
+[project.urls]
+Home = "https://github.com/das-projects/DeepRAGTuner.git"
+
+
+[tool.black]
+line-length = 120
+
+[tool.ruff]
+target-version = "py311"
+respect-gitignore = true
+line-length = 120
+# Pyflakes, bugbear, pycodestyle, pycodestyle warnings, isort
+select=["TID252", "B", "F", "E", "W", "I001"]
+
+[tool.ruff.isort]
+case-sensitive = true
+order-by-type = true
+known-first-party = ["finetune"]
+
+
+[tool.pytest.ini_options]
+timeout = 180
+addopts = [
+    "-o",
+    "console_output_style=progress",
+    "--disable-warnings",
+    "--cov=dalm",
+    "--cov=tests",
+    "--cov-report=term-missing",
+    "--cov-report=xml",
+    "--cov-report=html",
+    "--durations=10",
+]
+
+
+[tool.ruff.flake8-tidy-imports]
+# Disallow all relative imports.
+ban-relative-imports = "all"
+
+[tool.mypy]
+disallow_untyped_defs = true
+
+[[tool.mypy.overrides]]
+module = "sentence_transformers.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "transformers.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "accelerate.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "datasets.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "evaluate.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "hnswlib.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "sklearn.*"
+ignore_missing_imports = true
