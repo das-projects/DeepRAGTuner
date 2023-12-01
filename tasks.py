@@ -4,10 +4,10 @@ from typing import Optional
 from invoke import task
 from invoke.context import Context
 
-PACKAGE_NAME = "finetune"
+PACKAGE_NAME = "deepragtuner"
 VERSION_FILE = f"{PACKAGE_NAME}/__init__.py"
 # TODO: do only finetune
-SOURCES = " ".join(["finetune", "tasks.py", "tests"])
+SOURCES = " ".join(["deepragtuner", "tasks.py", "tests"])
 # TODO: Get this to 95
 PYTEST_FAIL_UNDER = 0
 

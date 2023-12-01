@@ -11,7 +11,7 @@ requires-python = ">=3.10"
 license = {text = "Apache 2.0"}
 dynamic = ["version", "description"]
 packages = [ 
-     { include = "finetune" }
+     { include = "deepragtuner" }
  ]
 dependencies = [
     "scikit-learn",
@@ -38,7 +38,7 @@ dalm = "dalm.cli:cli"
 "prefix" = "prefix"
 
 [tool.hatch.version]
-path = "finetune/__init__.py"
+path = "deepragtuner/__init__.py"
 
 
 [project.optional-dependencies]
